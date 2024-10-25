@@ -103,13 +103,12 @@ class Catalog(astropy.table.Table):
     """
 
     # Catalog identifiers
-    ATLAS: str = 'atlas@localhost'
-    ATLAS_VIZIER: str = 'atlas@vizier'
-    PANSTARRS: str = 'panstarrs'
-    GAIA: str = 'gaia'
-    MAKAK: str = 'makak'
-    USNOB: str = 'usno'
-    SDSS: str = 'sdss'
+    ATLAS = 'atlas@local'
+    ATLAS_VIZIER = 'atlas@vizier'
+    PANSTARRS = 'panstarrs'
+    GAIA = 'gaia'
+    MAKAK = 'makak'
+    USNOB = 'usno'
 
     # Define available catalogs with their properties
     KNOWN_CATALOGS: Dict[str, CatalogConfig]
