@@ -128,7 +128,7 @@ def remove_junk(hdr):
     return
 
 
-def process_single_image(arg, options, frame, siglim):
+def process_single_image(arg, options, frame, siglim, cat):
     """Process a single image for transient detection"""
     # Open detection file
     det = open_ecsv_file(arg, verbose=options.verbose)
@@ -145,8 +145,7 @@ def process_single_image(arg, options, frame, siglim):
     # Initialize WCS and compute sky coordinates
     try:
         imgwcs = astropy.wcs.WCS(det.meta)
-        det['ALPHA_J2000'], det['DELTA_J2000'] = imgwcs.all_world2pix(
-            [det['X_IMAGE']], [det['Y_IMAGE']], 1)
+        det['ALPHA_J2000'], det['DELTA_J2000'] = imgwcs.all_pix2world(det['X_IMAGE'], det['Y_IMAGE'], 1)
     except:
         return None
 
@@ -166,70 +165,69 @@ def process_single_image(arg, options, frame, siglim):
     epoch = (det.meta['JD'] - 2457204.5) / 365.2425
     
     # Get reference catalogs
-    candidates = get_transient_candidates(det, imgwcs, options, epoch, frame, siglim)
-    
+    candidates = get_transient_candidates(det, imgwcs, cat, options, epoch, frame, siglim)
+    print('Comparison to catalogues produced', len(candidates), 'candidates')
+
     if options.regs:
         save_region_file(candidates, det, options)
         
     return candidates
 
-def get_transient_candidates(det, imgwcs, options, epoch, frame, siglim):
+def get_transient_candidates(det, imgwcs, cat, options, epoch, frame, siglim):
     """Get transient candidates by comparing with reference catalogs"""
-    # Initialize catalog parameters
-    cat_params = {
-        'ra': det.meta['CTRRA'],
-        'dec': det.meta['CTRDEC'],
-        'width': options.enlarge * det.meta['FIELD'] if options.enlarge else det.meta['FIELD'],
-        'height': options.enlarge * det.meta['FIELD'] if options.enlarge else det.meta['FIELD'],
-        'mlim': options.maglim
-    }
-    
-    # Get ATLAS catalog
-    cat = Catalog(catalog='atlas@   ', **cat_params)
-    if cat is None or len(cat) == 0:
-        return None
-        
-    # Apply proper motion correction
+    # Apply proper motion correction - to be removed
     cat['radeg'] += epoch * cat['pmra'] 
     cat['decdeg'] += epoch * cat['pmdec']
     
     # Match detections with catalog
     candidates = match_and_filter_detections(det, cat, imgwcs, options, frame, siglim)
-    
     # If USNO option enabled, filter candidates against USNO
     if options.usno and len(candidates) > 0:
         candidates = filter_usno_matches(candidates, det, imgwcs, options)
         
-    return candidates
+    return candidates 
 
 def match_and_filter_detections(det, cat, imgwcs, options, frame, siglim):
     """Match detections with catalog and filter for transient candidates"""
+    # Ensure det is an astropy Table and has required columns
+    if not isinstance(det, astropy.table.Table):
+        det = astropy.table.Table(det)
+    
     # Transform catalog coordinates to pixel space
     try:
         cat_x, cat_y = imgwcs.all_world2pix(cat['radeg'], cat['decdeg'], 1)
         cat_pixels = np.array([cat_x, cat_y]).transpose()
     except:
-        if options.verbose:
-            print("Astrometry transform failed")
         return None
-        
+    
     # Set up KD-tree for matching
     idlimit = options.idlimit if options.idlimit else det.meta.get('FWHM', 1.2)
     tree = KDTree(cat_pixels)
     
     # Match detections
-    det_pixels = np.array([det['X_IMAGE'], det['Y_IMAGE']]).transpose()
+    det_pixels = np.array([[x, y] for x, y in zip(det['X_IMAGE'], det['Y_IMAGE'])])
     matches_idx, matches_dist = tree.query_radius(det_pixels, 
                                                 r=idlimit,
                                                 return_distance=True)
     
     # Filter and collect candidates
-    candidates = []
+    candidate_indices = []
     for i, (matches, detection) in enumerate(zip(matches_idx, det)):
-        if is_candidate(matches, detection, cat, det.meta, frame, siglim):
-            candidates.append(detection)
-            
-    return astropy.table.Table(candidates)
+        try:
+            if is_candidate(matches, detection, cat, det.meta, frame, siglim):
+                candidate_indices.append(i)
+        except:
+            continue
+    
+    # Create output table using row indices
+    if candidate_indices:
+        result = det[candidate_indices].copy()
+        return result
+    else:
+        # Return empty table with same structure as input
+        result = det[:0].copy()
+        return result
+
 def is_candidate(matches, detection, catalog, metadata, frame, siglim):
     """Determine if a detection is a transient candidate"""
     # Reject detections near frame edges
@@ -243,12 +241,18 @@ def is_candidate(matches, detection, catalog, metadata, frame, siglim):
     if detection['MAGERR_CALIB'] >= 1.091/siglim:
         return False
         
+    # Convert matches to list if it's not already iterable
+    try:
+        match_indices = matches.tolist() if hasattr(matches, 'tolist') else list(matches)
+    except:
+        match_indices = []
+    
     # No catalog matches - potential candidate
-    if len(matches) == 0:
+    if not match_indices:
         return True
         
     # Compare magnitudes with catalog
-    for match_idx in matches:
+    for match_idx in match_indices:
         try:
             # Get colors for transformation
             required_bands = ['Sloan_g', 'Sloan_r', 'Sloan_i', 'Sloan_z', 'J']
@@ -257,87 +261,118 @@ def is_candidate(matches, detection, catalog, metadata, frame, siglim):
                 if band not in catalog.columns:
                     continue
                 mag = catalog[match_idx][band]
-                if np.isnan(mag) or mag > 99:  # Check for invalid magnitudes
+                if isinstance(mag, (np.ma.core.MaskedConstant, np.ma.core.MaskedArray)) or \
+                   np.isnan(mag) or mag > 99:
                     continue
-                mags.append(mag)
+                mags.append(float(mag))
                 
-            if len(mags) < 2:  # Need at least two magnitudes for color
+            if len(mags) < 2:
                 continue
                 
-            # Fill missing magnitudes with estimates if needed
+            # Fill missing magnitudes with estimates
             while len(mags) < 5:
-                mags.append(mags[-1])  # Duplicate last magnitude
+                mags.append(mags[-1])
                 
             # Transform catalog magnitude using color model
             cat_mag = simple_color_model(
                 metadata['RESPONSE'],
-                (mags[1],      # Base magnitude (usually r-band)
-                 mags[0] - mags[1],  # g-r color
-                 mags[1] - mags[2],  # r-i color
-                 mags[2] - mags[3],  # i-z color
-                 mags[3] - mags[4])  # z-J color
+                (mags[1],           # Base magnitude (usually r-band)
+                 mags[0] - mags[1], # g-r color
+                 mags[1] - mags[2], # r-i color
+                 mags[2] - mags[3], # i-z color
+                 mags[3] - mags[4]) # z-J color
             )
             
-            det_mag = detection['MAG_CALIB']
-            
             # If magnitude difference within tolerance, not a candidate
-            if abs(cat_mag - det_mag) <= siglim * detection['MAGERR_CALIB']:
+            if abs(cat_mag - float(detection['MAG_CALIB'])) <= \
+               siglim * float(detection['MAGERR_CALIB']):
                 return False
                 
-        except Exception as e:
-            continue  # Skip problematic catalog matches
+        except Exception:
+            continue
             
     return True
-
 def filter_usno_matches(candidates, det, imgwcs, options):
     """Filter candidates by checking USNO catalog"""
+    if len(candidates) == 0:
+        return candidates
+
+    # Get USNO catalog for the field
     usno_params = {
         'ra': det.meta['CTRRA'],
         'dec': det.meta['CTRDEC'],
         'width': options.enlarge * det.meta['FIELD'] if options.enlarge else det.meta['FIELD'],
         'height': options.enlarge * det.meta['FIELD'] if options.enlarge else det.meta['FIELD'],
-        'mlim': options.maglim
+        'mlim': options.maglim if options.maglim else 20.0
     }
     
     # Get USNO catalog
     usno = Catalog(catalog='usno', **usno_params)
-    if usno is None:
+    if usno is None or len(usno) == 0:
+        if options.verbose:
+            print("No USNO stars found in the field")
         return candidates
+
+    if options.verbose:
+        print(f"Got {len(usno)} USNO stars for filtering")
         
-    # Set up matching parameters
+    # Set up matching parameters based on different phases
     phases = [
-        ('simple', options.maglim, options.idlimit if options.idlimit else det.meta.get('FWHM', 1.2)),
-        ('double', options.maglim - 1, 4),
-        ('bright', options.maglim - 9, 10)
+        ('simple', options.maglim if options.maglim else 20.0, 
+         options.idlimit if options.idlimit else det.meta.get('FWHM', 1.2)),
+        ('double', (options.maglim if options.maglim else 20.0) - 1, 4),
+        ('bright', (options.maglim if options.maglim else 20.0) - 9, 10)
     ]
     
-    filtered_candidates = candidates
-    for phase, maglim, match_radius in phases:
+    filtered_candidates = candidates.copy()
+    for phase_name, mag_limit, radius in phases:
         if len(filtered_candidates) < 1:
             break
             
-        # Filter bright USNO stars
-        bright_usno = usno[usno['R1mag'] < maglim]
+        # Filter bright USNO stars for this phase
+        bright_usno = usno[usno['R1mag'] < mag_limit]
         if len(bright_usno) == 0:
+            if options.verbose:
+                print(f"No USNO stars brighter than {mag_limit} for {phase_name} phase")
             continue
             
-        # Transform USNO coordinates
-        usno_x, usno_y = imgwcs.all_world2pix(bright_usno['radeg'], 
-                                             bright_usno['decdeg'], 1)
-        usno_pixels = np.array([usno_x, usno_y]).transpose()
+        if options.verbose:
+            print(f"Using {len(bright_usno)} USNO stars for {phase_name} phase")
         
+        # Transform USNO coordinates to pixel coordinates
+        try:
+            usno_x, usno_y = imgwcs.all_world2pix(bright_usno['radeg'], 
+                                                 bright_usno['decdeg'], 1)
+            usno_pixels = np.array([usno_x, usno_y]).transpose()
+        except:
+            if options.verbose:
+                print(f"Failed to convert USNO coordinates for {phase_name} phase")
+            continue
+
+        # Create KD-tree for efficient matching
+        try:
+            tree = KDTree(usno_pixels)
+        except:
+            if options.verbose:
+                print(f"Failed to create KD-tree for {phase_name} phase")
+            continue
+
         # Match candidates against USNO
-        tree = KDTree(usno_pixels)
         cand_pixels = np.array([filtered_candidates['X_IMAGE'], 
                               filtered_candidates['Y_IMAGE']]).transpose()
-        matches = tree.query_radius(cand_pixels, r=match_radius, 
-                                  return_distance=True)[0]
+        matches = tree.query_radius(cand_pixels, r=radius, return_distance=True)[0]
                                   
         # Keep only unmatched candidates
-        filtered_candidates = filtered_candidates[[len(m) == 0 for m in matches]]
+        unmatched_mask = [len(m) == 0 for m in matches]
         
         if options.verbose:
-            print(f'USNO {phase} left {len(filtered_candidates)} candidates')
+            n_matched = len(unmatched_mask) - sum(unmatched_mask)
+            print(f"USNO {phase_name} phase matched {n_matched} candidates")
+            
+        filtered_candidates = filtered_candidates[unmatched_mask]
+
+    if options.verbose:
+        print(f"USNO filtering: started with {len(candidates)}, ended with {len(filtered_candidates)} candidates")
             
     return filtered_candidates
 
@@ -362,11 +397,11 @@ def movement_residuals(fitvalues, data):
 
 def main():
     """Main function to process transient detection"""
-    options = readOptions(sys.argv[1:])
-
+    options = readOptions()
+    
     if options.maglim is None:
         options.maglim = 20
-
+        
     if options.verbose:
         print("%s running in python %d.%d.%d" % (
             os.path.basename(sys.argv[0]), 
@@ -376,66 +411,112 @@ def main():
         ))
         print("Magnitude limit set to %.2f" % (options.maglim))
 
-    # Initialize tracking variables
+    # Initialize tracking variables 
     maxtime = 0.0
     mintime = 1e99
     imgtimes = []
-    old = None  # Will store accumulated candidates
-    mags = []   # Will store magnitude histories
+    old = None
+    mags = []
+    times = []  # Add list to store observation times
     imgno = 0
     
     frame = options.frame if options.frame is not None else 10
     siglim = options.siglim if options.siglim is not None else 5
 
-    # Process each input file
+    # Load ATLAS catalog once at the start
+    first_det = open_ecsv_file(options.files[0], verbose=options.verbose)
+    if first_det is None:
+        print("Cannot open first file for catalog initialization")
+        sys.exit(1)
+
+    cat_params = {
+        'ra': first_det.meta['CTRRA'],
+        'dec': first_det.meta['CTRDEC'],
+        'width': options.enlarge * first_det.meta['FIELD'] if options.enlarge else first_det.meta['FIELD'],
+        'height': options.enlarge * first_det.meta['FIELD'] if options.enlarge else first_det.meta['FIELD'],
+        'mlim': options.maglim
+    }
+    cat = Catalog(catalog='atlas@local', **cat_params)
+    
+    if cat is None or len(cat) == 0:
+        print("Could not load reference catalog")
+        sys.exit(1)
+
+    print("Catalog loaded with", len(cat), "stars")
+
+    # Process input files
     for arg in options.files:
-        print("Processing file", arg)
+        print("file", arg)
         
-        # Process single image for candidates
-        candidates = process_single_image(arg, options, frame, siglim)
+        # Process single image using the pre-loaded catalog
+        candidates = process_single_image(arg, options, frame, siglim, cat)
         if candidates is None:
             continue
-            
+
         # Update time tracking
         ctime = candidates.meta['CTIME']
         exptime = candidates.meta['EXPTIME']
+        current_time = ctime + exptime/2
+        
         if ctime < mintime:
             mintime = ctime
         if ctime + exptime > maxtime:
             maxtime = ctime + exptime
-        imgtimes.append(ctime + exptime/2)
+        imgtimes.append(current_time)
 
         # First image or no previous detections
         if old is None:
-            old = candidates
-            mags = [astropy.table.Table(row) for row in candidates]
+            # Filter out rows with NaN coordinates
+            valid_coords = ~(np.isnan(candidates['ALPHA_J2000']) | 
+                           np.isnan(candidates['DELTA_J2000']))
+            old = candidates[valid_coords]
+            mags = [astropy.table.Table(row) for row in old]
+            for _ in range(len(old)):
+                times.append([current_time])  # Initialize time list for each object
             imgno += 1
             continue
 
+        # Filter out NaN coordinates from both old and new candidates
+        valid_old = ~(np.isnan(old['ALPHA_J2000']) | np.isnan(old['DELTA_J2000']))
+        old_filtered = old[valid_old]
+        valid_new = ~(np.isnan(candidates['ALPHA_J2000']) | 
+                     np.isnan(candidates['DELTA_J2000']))
+        candidates_filtered = candidates[valid_new]
+
+        if len(old_filtered) == 0 or len(candidates_filtered) == 0:
+            continue
+
         # Cross-match new candidates with previous detections
-        tree = BallTree(np.array([old['ALPHA_J2000']*np.pi/180,
-                                old['DELTA_J2000']*np.pi/180]).transpose(),
+        tree = BallTree(np.array([old_filtered['ALPHA_J2000']*np.pi/180,
+                                old_filtered['DELTA_J2000']*np.pi/180]).transpose(),
                        metric='haversine')
                        
-        new_coords = np.array([candidates['ALPHA_J2000']*np.pi/180,
-                             candidates['DELTA_J2000']*np.pi/180]).transpose()
+        new_coords = np.array([candidates_filtered['ALPHA_J2000']*np.pi/180,
+                             candidates_filtered['DELTA_J2000']*np.pi/180]).transpose()
+        
+        # Use the same idlimit logic as in match_and_filter_detections
+        idlimit = options.idlimit if options.idlimit else candidates.meta.get('FWHM', 1.2)
                              
         matches_idx, matches_dist = tree.query_radius(
             new_coords,
-            r=candidates.meta['PIXEL']*options.idlimit/3600.0*np.pi/180,
+            r=candidates.meta['PIXEL']*idlimit/3600.0*np.pi/180,
             return_distance=True
         )
 
         # Update records based on matches
-        for i, (matches, dist) in enumerate(zip(matches_idx, matches_dist)):
+        old_valid_indices = np.where(valid_old)[0]
+        for i, (matches, _) in enumerate(zip(matches_idx, matches_dist)):
             if len(matches) > 0:
                 # Known source - update existing record
-                old['NUM'][matches[0]] += 1
-                mags[matches[0]].add_row(candidates[i])
+                orig_idx = old_valid_indices[matches[0]]
+                old['NUM'][orig_idx] += 1
+                mags[orig_idx].add_row(candidates_filtered[i])
+                times[orig_idx].append(current_time)
             else:
                 # New source - add to records
-                old.add_row(candidates[i])
-                mags.append(astropy.table.Table(candidates[i]))
+                old.add_row(candidates_filtered[i])
+                mags.append(astropy.table.Table(candidates_filtered[i]))
+                times.append([current_time])
                 
         imgno += 1
 
@@ -458,13 +539,14 @@ def main():
     transients = []
     for idx in sufficient_detections:
         candidate = mags[idx]
+        candidate_times = times[idx]
         
-        # Calculate time reference
-        t0 = np.min(old['CTIME'])/2 + np.max(old['CTIME'])/2
-        dt = np.max(old['CTIME']) - np.min(old['CTIME'])
+        # Calculate time reference using stored observation times
+        t0 = (min(candidate_times) + max(candidate_times)) / 2
+        dt = max(candidate_times) - min(candidate_times)
         
         # Analyze movement in RA
-        x = candidate['CTIME'] - t0
+        x = np.array(candidate_times) - t0
         ra_data = [x, candidate['ALPHA_J2000']]
         ra_fit = fit.least_squares(movement_residuals, 
                                  [candidate['ALPHA_J2000'][0], 1.0],
@@ -517,20 +599,15 @@ def main():
             magvar                 # Magnitude variation
         ])
         
-        print(f"{status} num:{len(candidate)} mag:{mag0:.2f} magvar:{magvar:.1f}, "
-              f"mean_pos:{ra_fit.x[0]:.5f},{dec_fit.x[0]:.5f}, "
-              f"movement: {ra_speed*np.cos(dec_fit.x[0]*np.pi/180.0):.3f},"
-              f"{dec_speed:.3f}, sigma: {ra_scatter*3600:.2f},{dec_scatter*3600:.2f}")
-
     # Create final transients table
-    trans = astropy.table.Table(
+    transients = astropy.table.Table(
         rows=transients,
         names=['INDEX','NUM','ALPHA_J2000','DELTA_J2000','ALPHA_MOV','DELTA_MOV',
                'DPOS','ALPHA_SIG','DELTA_SIG','SIGMA','MAG_CALIB','MAG_VAR'],
         dtype=['int64','int64','float64','float64','float32','float32',
                'float32','float32','float32','float32','float32','float32']
     )
-    print(trans)
+    transients.write("transients.ecsv", format="ascii.ecsv", overwrite=True)
     print("In total", len(old), "positions considered.")
 
 if __name__ == "__main__":

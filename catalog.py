@@ -74,7 +74,7 @@ class Catalog(astropy.table.Table):
     """
 
     # Catalog identifiers
-    ATLAS = 'atlas@localhost'
+    ATLAS = 'atlas@local'
     ATLAS_VIZIER = 'atlas@vizier'
     PANSTARRS = 'panstarrs'
     GAIA = 'gaia'
