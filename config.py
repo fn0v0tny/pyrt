@@ -12,10 +12,11 @@ DEFAULT_CONFIG_FILE = "~/.config/dophot3/config"
 def load_config(config_file: str):  # -> Dict[str, Any]:
     """
     Load configuration from the specified file.
-    
+
     :param config_file: Path to the configuration file
     :return: Dictionary containing configuration options
     """
+    # First load the default configuration
     config = configparser.ConfigParser()
     config.read(os.path.expanduser(config_file))
     return dict(config["DEFAULT"])
@@ -24,7 +25,7 @@ def load_config(config_file: str):  # -> Dict[str, Any]:
 def parse_arguments(args=None):
     """
     Parse command-line arguments, integrating with config file options.
-    
+
     :param args: Command line arguments (if None, sys.argv is used)
     :return: Namespace object containing all configuration options
     """
@@ -264,6 +265,9 @@ def parse_arguments(args=None):
 
     # Parse remaining arguments
     args = parser.parse_args(remaining_argv)
+
+    # Add the filter schemas to the parsed arguments
+    args.filter_schemas = config['filter_schemas']
 
     # Convert string 'True'/'False' to boolean for action="store_true" arguments
     for arg in [
