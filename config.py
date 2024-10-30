@@ -8,19 +8,46 @@ import os
 
 DEFAULT_CONFIG_FILE = "~/.config/dophot3/config"
 
-
-def load_config(config_file: str):  # -> Dict[str, Any]:
+def load_config(config_file: str = None):
     """
-    Load configuration from the specified file.
+    Load configuration, properly merging [DEFAULT] sections from both built-in defaults
+    and the config file to preserve all keywords.
 
-    :param config_file: Path to the configuration file
-    :return: Dictionary containing configuration options
+    :param config_file: Optional path to user config file
+    :return: Dictionary containing configuration options including all DEFAULT keywords
     """
-    # First load the default configuration
-    config = configparser.ConfigParser()
-    config.read(os.path.expanduser(config_file))
-    return dict(config["DEFAULT"])
+    # Load built-in defaults
+    default_config = configparser.ConfigParser()
+    default_config.read_string(DEFAULT_CONFIG)
 
+    # Create a new config parser for the file config
+    file_config = configparser.ConfigParser()
+
+    # Load either the default config file or user-specified file
+    if config_file:
+        config_path = os.path.expanduser(config_file)
+    else:
+        config_path = os.path.expanduser(DEFAULT_CONFIG_FILE)
+
+    if os.path.exists(config_path):
+        file_config.read(config_path)
+
+    # Start with all keywords from the built-in DEFAULT section
+    result = dict(default_config['DEFAULT'])
+
+    # Add all keywords from the file's DEFAULT section, preserving existing ones
+    if 'DEFAULT' in file_config:
+        for key, value in file_config['DEFAULT'].items():
+            if key not in result:  # Only add if not already present
+                result[key] = value
+
+    # Handle FILTER_SCHEMAS section if present in file config
+    if 'FILTER_SCHEMAS' in file_config:
+        result['filter_schemas'] = {}
+        for schema_name, filters in file_config['FILTER_SCHEMAS'].items():
+            result['filter_schemas'][schema_name] = set(f.strip() for f in filters.split(','))
+
+    return result
 
 def parse_arguments(args=None):
     """
