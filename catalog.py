@@ -482,12 +482,7 @@ class Catalog(astropy.table.Table):
             FROM {config['catalog_id']}
             WHERE 1=CONTAINS(
                 POINT('ICRS', ra, dec),
-<<<<<<< HEAD
                 BOX('ICRS', {self._query_params.ra}, {self._query_params.dec}, {2*self._query_params.width}, {2*self._query_params.height}))
-=======
-                BOX('ICRS', {self._query_params.ra}, {self._query_params.dec},
-                    {self._query_params.width}, {self._query_params.height}))
->>>>>>> 2ce6ff9 (more changes to get gaia working)
                 AND phot_g_mean_mag < {self._query_params.mlim}
                 AND ruwe < 1.4
                 AND visibility_periods_used >= 8
@@ -509,7 +504,6 @@ class Catalog(astropy.table.Table):
             result = astropy.table.Table()
 
             # Basic astrometry
-<<<<<<< HEAD
             result["radeg"] = gaia_cat["ra"]
             result["decdeg"] = gaia_cat["dec"]
             result["pmra"] = gaia_cat["pmra"] / (3.6e6)  # mas/yr to deg/yr
@@ -525,7 +519,7 @@ class Catalog(astropy.table.Table):
                     result[filter_info.error_name] = 2.5 / (
                         flux_over_error * np.log(10)
                     )
-=======
+
             result['radeg'] = gaia_cat['ra']
             result['decdeg'] = gaia_cat['dec']
             try:
@@ -541,12 +535,11 @@ class Catalog(astropy.table.Table):
             for gaia_name, our_name in config['column_mapping'].items():
                 if gaia_name in gaia_cat.columns:
                     result[our_name] = gaia_cat[gaia_name].astype(np.float64)
+
                 gaia_name_err = gaia_name.replace('_mag_error', '_flux_over_error')
                 if gaia_name_err in gaia_cat.columns:
                     flux_over_error = gaia_cat[gaia_name_err]
                     result[our_name] = 2.5 / (flux_over_error * np.log(10))
->>>>>>> 2ce6ff9 (more changes to get gaia working)
-
             return result
 
         except Exception as e:
