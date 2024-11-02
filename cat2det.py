@@ -209,7 +209,8 @@ def get_limits(det, verbose=False):
         else:
             det.meta["DLIMFLX3"] = 0
     except:
-        fiterrors = res.x * np.nan
+        fiterrors = res.x*np.nan
+        det.meta['DLIMFLX3'] = 0
 
     if verbose and res.success:
         print(
