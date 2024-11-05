@@ -41,7 +41,7 @@ class FotFit(termfit.termfit):
         super().__init__()
         self.fit_xy = fit_xy
         self.base_filter = None  # Store the filter used for fitting
-        self.color_filters = []  # Store filters used for colors
+        self.color_schema = None  # Store filters used for colors
 
         if file is not None:
             self.readmodel(file)
@@ -91,7 +91,7 @@ class FotFit(termfit.termfit):
     def set_filter_info(self, base_filter: str, color_filters: List[str]) -> None:
         """Store filter information used in the fit"""
         self.base_filter = base_filter
-        self.color_filters = color_filters
+        self.color_schema = color_schema
 
     def fit(self, data: Tuple[NDArray, ...]) -> OptimizeResult:
         self.fitvalues = self.fitvalues[0 : (len(self.fitterms))] + self.zero
@@ -316,10 +316,12 @@ class FotFit(termfit.termfit):
 
     def oneline(self) -> str:
         """Enhanced model string with filter information"""
+        output=[]
         # Start with filter information
-        output = f"FILTER={self.base_filter}"
-        if self.color_filters:
-            output += f",COLORS={','.join(self.color_filters)}"
+        if self.base_filter is not None:
+            output.append(f"FILTER={self.base_filter}")
+        if self.color_schema is not None: 
+            output.append(f"SCHEMA={self.color_schema}")
 
         # Add all fitted and fixed terms
         for term, value in zip(
@@ -333,9 +335,10 @@ class FotFit(termfit.termfit):
             px = self.fitvalues[len(self.fitterms) + N : len(self.fitterms) + 2 * N]
             py = self.fitvalues[len(self.fitterms) + 2 * N : len(self.fitterms) + 3 * N]
             for i, (px_val, py_val) in enumerate(zip(px, py)):
-                output += f",PX{i}={px_val},PY{i}={py_val}"
+                output.append(f"PX{i}={px_val}")
+                output.append(f"PY{i}={py_val}")
 
-        return output
+        return ",".join(output)
 
     def savemodel(self, file: str) -> None:
         """Enhanced model saving with complete metadata"""
