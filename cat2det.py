@@ -168,6 +168,7 @@ def fix_time(hdr, verbose=False):
     time = astropy.time.Time(hdr["JD"], format="jd")
 
     # for stellar physics with high time resolution, BJD is very useful
+
     ondrejov = EarthLocation(
         lat=hdr["LATITUDE"] * u.deg,
         lon=hdr["LONGITUD"] * u.deg,
@@ -178,6 +179,34 @@ def fix_time(hdr, verbose=False):
         hdr["BJD"] = hdr["JD"] + time.light_travel_time(
             target, kind="barycentric", location=ondrejov, ephemeris="builtin"
         ).to_value("jd", subfmt="float")
+
+
+def calculate_background_stats(data):
+    """Calculate background sigma using row differences method"""
+    if data is None or len(data) < 2:
+        raise ValueError("Invalid data array for background calculation")
+
+    ndiff = np.zeros(len(data), dtype=np.float64)
+    i, j = 0, 0
+
+    while i < len(data) - 1:
+        diff = abs(data[i].astype(np.float32) - data[i + 1].astype(np.float32))
+        median = np.nanmedian(diff)
+        if not np.isnan(median):
+            ndiff[j] = median
+            j += 1
+        i += 1
+
+    if j == 0:
+        raise ValueError("No valid background measurements")
+
+    scale_factor = (
+        1.0489  # scale factor of median of two point's distance to standard deviation
+    )
+    sigma = np.nanmedian(ndiff[:j])
+    median = np.nanmedian(data[~np.isnan(data)])
+
+    return scale_factor * sigma, median
 
 
 def get_limits(det, verbose=False):
@@ -209,8 +238,8 @@ def get_limits(det, verbose=False):
         else:
             det.meta["DLIMFLX3"] = 0
     except:
-        fiterrors = res.x*np.nan
-        det.meta['DLIMFLX3'] = 0
+        fiterrors = res.x * np.nan
+        det.meta["DLIMFLX3"] = 0
 
     if verbose and res.success:
         print(
@@ -369,6 +398,10 @@ def main():
         det["MAGERR_AUTO"] = np.sqrt(
             det["MAGERR_AUTO"] * det["MAGERR_AUTO"] + 0.0005 * 0.0005
         )
+
+        img_sigma, img_median = calculate_background_stats(fitsfile[0].data)
+        det.meta["MEDIAN"] = img_median
+        det.meta["BGSIGMA"] = img_sigma
 
         c = fitsfile[0].header
         fitsfile.close()

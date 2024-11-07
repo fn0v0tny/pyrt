@@ -16,7 +16,8 @@ PS = g, r, i, z, y
 USNO = B2, R2, I, R1, B1
 
 
-DEFAULT_CONFIG_FILE = '~/.config/dophot3/config'
+DEFAULT_CONFIG_FILE = "~/.config/dophot3/config"
+
 
 def load_config(config_file: str = None):
     """
@@ -43,23 +44,29 @@ def load_config(config_file: str = None):
         file_config.read(config_path)
 
     # Start with all keywords from the built-in DEFAULT section
-    result = dict(default_config['DEFAULT'])
+    result = dict(default_config["DEFAULT"])
 
     # Add all keywords from the file's DEFAULT section, preserving existing ones
-    if 'DEFAULT' in file_config:
-        for key, value in file_config['DEFAULT'].items():
+    if "DEFAULT" in file_config:
+        for key, value in file_config["DEFAULT"].items():
             if key not in result:  # Only add if not already present
                 result[key] = value
 
     # Handle FILTER_SCHEMAS section if present in file config
-    if 'FILTER_SCHEMAS' in file_config:
-        result['filter_schemas'] = {} #OrderedDict()
-        for schema_name, filters in file_config['FILTER_SCHEMAS'].items():
+    if "FILTER_SCHEMAS" in file_config:
+        result["filter_schemas"] = {}  # OrderedDict()
+        for schema_name, filters in file_config["FILTER_SCHEMAS"].items():
             # Use a list instead of a set to maintain order
-            result['filter_schemas'][schema_name] = [f.strip() for f in filters.split(',')]
-        print("filter schemas from config file: ", {k: v for k, v in result['filter_schemas'].items()})
+            result["filter_schemas"][schema_name] = [
+                f.strip() for f in filters.split(",")
+            ]
+        print(
+            "filter schemas from config file: ",
+            {k: v for k, v in result["filter_schemas"].items()},
+        )
 
     return result
+
 
 def parse_arguments(args=None):
     """
@@ -306,7 +313,7 @@ def parse_arguments(args=None):
     args = parser.parse_args(remaining_argv)
 
     # Add the filter schemas to the parsed arguments
-    args.filter_schemas = config['filter_schemas']
+    args.filter_schemas = config["filter_schemas"]
 
     # Convert string 'True'/'False' to boolean for action="store_true" arguments
     for arg in [

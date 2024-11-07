@@ -10,12 +10,15 @@ from sklearn.neighbors import KDTree
 from catalog import Catalog, QueryParams
 from dataclasses import dataclass
 
+
 @dataclass
 class HotPixelParams:
     """Parameters for hot pixel detection."""
+
     max_position_shift: float = 2.0  # Maximum allowed position shift in pixels
     min_detections: int = 3  # Minimum number of detections to consider
     max_flux_std: float = 0.2  # Maximum allowed standard deviation in normalized flux
+
 
 class TransientAnalyzer:
     """Combined system for transient detection and feature extraction."""
@@ -284,11 +287,12 @@ def combine_results(
 
     return vstack(reliable) if reliable else Table()
 
+
 class MultiDetectionAnalyzer:
     # Metadata keys that we want to preserve as columns
-    IMPORTANT_METADATA = {  }
+    IMPORTANT_METADATA = {}
     """Analyzer for processing transients across multiple detection tables."""
-    
+
     def __init__(self, transient_analyzer):
         """
         Initialize the analyzer.
@@ -297,7 +301,7 @@ class MultiDetectionAnalyzer:
             transient_analyzer: Instance of TransientAnalyzer
         """
         self.transient_analyzer = transient_analyzer
-        
+
     def process_detection_tables(
         self,
         detection_tables: List[Table],
@@ -309,7 +313,7 @@ class MultiDetectionAnalyzer:
         min_catalogs: int = 1,
         min_quality: float = 0.1,
         position_match_radius: float = 2.0,  # Maximum distance to consider same object
-        min_n_detections: int = 3  # Minimum number of detections required
+        min_n_detections: int = 3,  # Minimum number of detections required
     ) -> Table:
         """
         Process multiple detection tables and collect magnitude information.
@@ -332,16 +336,28 @@ class MultiDetectionAnalyzer:
         # First pass: get transients from each detection table
         existing_files = set(os.listdir())
         tables_to_process = [
-        det_table for det_table in detection_tables
-        if f"{det_table.meta['FITSFILE'][:-4]}_transients.ecsv" not in existing_files
+            det_table
+            for det_table in detection_tables
+            if f"{det_table.meta['FITSFILE'][:-4]}_transients.ecsv"
+            not in existing_files
         ]
         for det_table in tables_to_process:
-            reliable = combine_results(transients, min_catalogs=min_catalogs, min_quality=min_quality)
-            reliable.write(f"{det_table.meta['FITSFILE'][:-4]}_transients.ecsv", overwrite=True)
+            reliable = combine_results(
+                transients, min_catalogs=min_catalogs, min_quality=min_quality
+            )
+            reliable.write(
+                f"{det_table.meta['FITSFILE'][:-4]}_transients.ecsv", overwrite=True
+            )
         return self._combine_transients_across_files(
             detection_tables, position_match_radius, min_n_detections
         )
-    def _combine_transients_across_files(self,detection_tables: List[Table], position_match_radius: float = 2.0, min_n_files: int = 1) -> Table:
+
+    def _combine_transients_across_files(
+        self,
+        detection_tables: List[Table],
+        position_match_radius: float = 2.0,
+        min_n_files: int = 1,
+    ) -> Table:
         """Combine transient candidates from multiple files based on position matching.
         
         Args:
@@ -358,44 +374,50 @@ class MultiDetectionAnalyzer:
             try:
                 table = Table.read(f"{det_table.meta['FITSFILE'][:-4]}_transients.ecsv")
                 # Add source file information if not present
-                if 'source_file' not in table.colnames:
+                if "source_file" not in table.colnames:
                     table.meta = {}
-                    table['source_file'] = det_table.meta['FITSFILE'][:-4]
+                    table["source_file"] = det_table.meta["FITSFILE"][:-4]
                 all_tables.append(table)
             except Exception as e:
-                print(f"Error reading {det_table.meta['FITSFILE'][:-4]}_transients.ecsv: {e}")
+                print(
+                    f"Error reading {det_table.meta['FITSFILE'][:-4]}_transients.ecsv: {e}"
+                )
         if not all_tables:
             print("No transient tables found.")
             return Table()
         # Stack all candidates, metadata=False to avoid merge conflicts
-        all_candidates = vstack(all_tables, metadata_conflicts='silent')
-        all_candidates.remove_column('quality_flag')
+        all_candidates = vstack(all_tables, metadata_conflicts="silent")
+        all_candidates.remove_column("quality_flag")
         if len(all_candidates) == 0:
             print("Stack failed")
             return Table()
         print(all_candidates)
         ra_rad = np.radians(all_candidates["ALPHA_J2000"])
         dec_rad = np.radians(all_candidates["DELTA_J2000"])
-        
+
         # Convert to unit vector on celestial sphere
         x = np.cos(dec_rad) * np.cos(ra_rad)
         y = np.cos(dec_rad) * np.sin(ra_rad)
         z = np.sin(dec_rad)
         coords = np.column_stack((x, y, z))
-            
+
         # Create KDTree with 3D coordinates
         tree = KDTree(coords)
 
         # Convert position_match_radius from degrees to chord length
         # For small angles, chord length ≈ 2 * sin(theta/2)
-        chord_length = 2 * np.sin(np.radians(position_match_radius/3600)/2)
+        chord_length = 2 * np.sin(np.radians(position_match_radius / 3600) / 2)
 
         # Find groups within specified radius
         groups = tree.query_radius(coords, r=chord_length)
 
         # Create new table with proper column types
-        result = Table(names=all_candidates.colnames + ['n_detections', 'n_files', 'position_scatter_arcsec', 'mag_variance'],
-                dtype=[all_candidates[col].dtype for col in all_candidates.colnames] + [int, int, float, float])
+        result = Table(
+            names=all_candidates.colnames
+            + ["n_detections", "n_files", "position_scatter_arcsec", "mag_variance"],
+            dtype=[all_candidates[col].dtype for col in all_candidates.colnames]
+            + [int, int, float, float],
+        )
         # Filter candidates appearing in enough files
         processed = set()
 
@@ -406,50 +428,60 @@ class MultiDetectionAnalyzer:
             # Each group represents one unique transient
             if len(group) >= min_n_files:
                 group_data = all_candidates[group]
-                
+
                 # Calculate mean position (using vector average for better accuracy)
                 mean_x = np.mean(coords[group, 0])
                 mean_y = np.mean(coords[group, 1])
                 mean_z = np.mean(coords[group, 2])
-                
+
                 # Normalize back to unit vector
-                norm = np.sqrt(mean_x**2 + mean_y**2 + mean_z**2)
+                norm = np.sqrt(mean_x ** 2 + mean_y ** 2 + mean_z ** 2)
                 mean_x /= norm
                 mean_y /= norm
                 mean_z /= norm
-                
+
                 # Convert back to RA/Dec
                 mean_ra = np.degrees(np.arctan2(mean_y, mean_x)) % 360
                 mean_dec = np.degrees(np.arcsin(mean_z))
-                
+
                 # Take the detection with highest quality score as base
                 best_idx = group[np.argmax(group_data["quality_score"])]
                 best_detection = all_candidates[best_idx]
-                
+
                 # Create new row with all original columns
                 new_row = []
                 for col in all_candidates.colnames:
                     new_row.append(best_detection[col])
-                
+
                 # Update positions
                 pos_idx_ra = all_candidates.colnames.index("ALPHA_J2000")
                 pos_idx_dec = all_candidates.colnames.index("DELTA_J2000")
                 new_row[pos_idx_ra] = mean_ra
                 new_row[pos_idx_dec] = mean_dec
-                
+
                 # Calculate position scatter in arcseconds
-                ra_scatter = np.std(group_data["ALPHA_J2000"]) * 3600  # convert to arcsec
-                dec_scatter = np.std(group_data["DELTA_J2000"]) * 3600  # convert to arcsec
-                pos_scatter = np.sqrt(ra_scatter**2 + dec_scatter**2)
-                
-                mag_variance = np.var(group_data["MAG_CALIB"]) if "MAG_CALIB" in group_data.colnames else np.nan
-                
-                new_row.extend([
-                    len(group),  # n_detections
-                    len(group),  # n_files
-                    pos_scatter,
-                    mag_variance
-                ])
+                ra_scatter = (
+                    np.std(group_data["ALPHA_J2000"]) * 3600
+                )  # convert to arcsec
+                dec_scatter = (
+                    np.std(group_data["DELTA_J2000"]) * 3600
+                )  # convert to arcsec
+                pos_scatter = np.sqrt(ra_scatter ** 2 + dec_scatter ** 2)
+
+                mag_variance = (
+                    np.var(group_data["MAG_CALIB"])
+                    if "MAG_CALIB" in group_data.colnames
+                    else np.nan
+                )
+
+                new_row.extend(
+                    [
+                        len(group),  # n_detections
+                        len(group),  # n_files
+                        pos_scatter,
+                        mag_variance,
+                    ]
+                )
                 result.add_row(new_row)
                 processed.update(group)
 
@@ -459,4 +491,4 @@ class MultiDetectionAnalyzer:
         # Sort by quality score
         result.sort("quality_score", reverse=True)
 
-        return result        
+        return result

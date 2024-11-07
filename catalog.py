@@ -470,9 +470,9 @@ class Catalog(astropy.table.Table):
             from astroquery.gaia import Gaia
 
             config = self.KNOWN_CATALOGS[self.GAIA]
-                #-- Convert null proper motions to 0
-                #COALESCE(pmra, 0.0) as pmra,
-                #COALESCE(pmdec, 0.0) as pmdec,
+            # -- Convert null proper motions to 0
+            # COALESCE(pmra, 0.0) as pmra,
+            # COALESCE(pmdec, 0.0) as pmdec,
             query = f"""
             SELECT
                 source_id, ra, dec, pmra, pmdec,
@@ -520,23 +520,27 @@ class Catalog(astropy.table.Table):
                         flux_over_error * np.log(10)
                     )
 
-            result['radeg'] = gaia_cat['ra']
-            result['decdeg'] = gaia_cat['dec']
+            result["radeg"] = gaia_cat["ra"]
+            result["decdeg"] = gaia_cat["dec"]
             try:
-                result['pmra'] = np.float64(gaia_cat['pmra']) / (3.6e6)  # mas/yr to deg/yr
+                result["pmra"] = np.float64(gaia_cat["pmra"]) / (
+                    3.6e6
+                )  # mas/yr to deg/yr
             except TypeError:
-                result['pmra'] = 0
+                result["pmra"] = 0
             try:
-                result['pmdec'] = np.float64(gaia_cat['pmdec']) / (3.6e6)  # mas/yr to deg/yr
+                result["pmdec"] = np.float64(gaia_cat["pmdec"]) / (
+                    3.6e6
+                )  # mas/yr to deg/yr
             except TypeError:
-                result['pmdec'] = 0
+                result["pmdec"] = 0
 
             # Map columns according to configuration
-            for gaia_name, our_name in config['column_mapping'].items():
+            for gaia_name, our_name in config["column_mapping"].items():
                 if gaia_name in gaia_cat.columns:
                     result[our_name] = gaia_cat[gaia_name].astype(np.float64)
 
-                gaia_name_err = gaia_name.replace('_mag_error', '_flux_over_error')
+                gaia_name_err = gaia_name.replace("_mag_error", "_flux_over_error")
                 if gaia_name_err in gaia_cat.columns:
                     flux_over_error = gaia_cat[gaia_name_err]
                     result[our_name] = 2.5 / (flux_over_error * np.log(10))
@@ -572,8 +576,8 @@ class Catalog(astropy.table.Table):
             # Query VizieR
             result = vizier.query_region(
                 coords,
-                width=2*self._query_params.width * u.deg,
-                height=2*self._query_params.height * u.deg,
+                width=2 * self._query_params.width * u.deg,
+                height=2 * self._query_params.height * u.deg,
                 catalog=config["catalog_id"],
             )
 

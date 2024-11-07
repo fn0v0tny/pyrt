@@ -316,11 +316,11 @@ class FotFit(termfit.termfit):
 
     def oneline(self) -> str:
         """Enhanced model string with filter information"""
-        output=[]
+        output = []
         # Start with filter information
         if self.base_filter is not None:
             output.append(f"FILTER={self.base_filter}")
-        if self.color_schema is not None: 
+        if self.color_schema is not None:
             output.append(f"SCHEMA={self.color_schema}")
 
         # Add all fitted and fixed terms
