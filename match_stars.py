@@ -237,8 +237,6 @@ def process_image_with_dynamic_limits(det, options):
             det, imgwcs, idlimit=options.idlimit if options.idlimit else 2.0
         )
 
-        target_match = None
-
         # Initial catalog search with bright stars
         initial_cat = Catalog(
             ra=det.meta["CTRRA"],
@@ -272,7 +270,6 @@ def process_image_with_dynamic_limits(det, options):
             det, cat, imgwcs, idlimit=options.idlimit if options.idlimit else 2.0
         )
 
-        print(final_matches)
         return cat, final_matches, imgwcs, target_match
 
     except Exception as e:
