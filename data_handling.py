@@ -226,7 +226,10 @@ def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data, maglim=None)
         ]
         cat_data = cat[cat_inds]
 
+        # RA+Dec of detections from their measured X&Y
         ra, dec = imgwcs.all_pix2world(det_data[:, 0], det_data[:, 1], 1)
+        # X,Y for catalog for their catalog RA&Dec
+        cat_x, cat_y = imgwcs.all_world2pix(cat_data["radeg"], cat_data["decdeg"], 1)
 
         loc = EarthLocation(
             lat=det.meta["LATITUDE"] * u.deg,
@@ -274,6 +277,8 @@ def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data, maglim=None)
             image_dxy=_image_dxy,
             ra=cat_data["radeg"][mag_mask],
             dec=cat_data["decdeg"][mag_mask],
+            cat_x=cat_x[mag_mask],  # transformed catalog X positions
+            cat_y=cat_y[mag_mask],  # transformed catalog Y positions
         )
 
         for filter_name, mag_values in filter_mags.items():

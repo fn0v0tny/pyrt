@@ -47,9 +47,7 @@ class FotFit(termfit.termfit):
             self.readmodel(file)
             self.fixall()
 
-        self.fit_xy = fit_xy
-
-    def __str__(self) -> str:
+    def __str__(self):
         output = " img --zeropoint--- ------px------ ------py------ \n"
 
         Nt = len(self.fitterms)
@@ -120,6 +118,10 @@ class FotFit(termfit.termfit):
         Returns:
             2D array of flat field data
         """
+
+        x_fine = x.astype(float) + 0.5  # Center of pixels
+        y_fine = y.astype(float) + 0.5
+
         # Normalize coordinates
         coord_x = (x - ctrx) / 1024.0
         coord_y = (y - ctry) / 1024.0
@@ -138,6 +140,8 @@ class FotFit(termfit.termfit):
             np.full(shape, img),
             np.zeros(shape),  # y (not used in flat field calculation)
             np.ones(shape),  # err (set to 1, not used in model calculation)
+            x_fine,
+            y_fine,
         )
 
         return self.model(self.fitvalues, data)
@@ -167,6 +171,8 @@ class FotFit(termfit.termfit):
             img,
             y,
             err,
+            cat_x,
+            cat_y,
         ) = data
         values = np.asarray(values)
         img = np.int64(img)
@@ -185,8 +191,22 @@ class FotFit(termfit.termfit):
                 model += value * mc ** 2
             elif term == "N3":
                 model += value * mc ** 3
+            # Sub-pixel variation terms
+            elif term == "SX":
+                # Sinusoidal variation in X direction
+                frac_x = cat_x - np.floor(cat_x)
+                model += value * np.sin(np.pi * frac_x)
+            elif term == "SY":
+                # Sinusoidal variation in Y direction
+                frac_y = cat_y - np.floor(cat_y)
+                model += value * np.sin(np.pi * frac_y)
+            elif term == "SXY":
+                # Cross-term for X-Y sub-pixel variations
+                frac_x = cat_x - np.floor(cat_x)
+                frac_y = cat_y - np.floor(cat_y)
+                model += value * np.sin(np.pi * frac_x) * np.sin(np.pi * frac_y)
             elif term[0] == "P":
-                components: Dict[str, NDArray] = {
+                components = {
                     "A": airmass,
                     "C": color1,
                     "D": color2,
@@ -290,6 +310,8 @@ class FotFit(termfit.termfit):
             img,
             y,
             err,
+            cat_x,
+            cat_y,
         ) = data
         return np.abs(y - self.model(values, data))
 
@@ -307,6 +329,8 @@ class FotFit(termfit.termfit):
             img,
             y,
             err,
+            cat_x,
+            cat_y,
         ) = data
         dist = np.abs((y - self.model(values, data)) / err)
         if self.delin:
