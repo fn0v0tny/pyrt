@@ -97,138 +97,32 @@ def parse_arguments(args=None):
     )
 
     # Add arguments, using config values as defaults
-    parser.add_argument(
-        "-a",
-        "--astrometry",
-        action="store_true",
-        default=config.get("astrometry", "False"),
-        help="Refit astrometric solution using photometry-selected stars",
-    )
-    parser.add_argument(
-        "-A",
-        "--aterms",
-        default=config.get("aterms"),
-        help="Terms to fit for astrometry",
-    )
-    parser.add_argument(
-        "--usewcs",
-        default=config.get("usewcs"),
-        help="Use this astrometric solution (file with header)",
-    )
-    parser.add_argument(
-        "-b",
-        "--basemag",
-        default=config.get("basemag", None),
-        help='ID of the base filter to be used while fitting (def="Sloan_r"/"Johnson_V")',
-    )
-    parser.add_argument(
-        "-C",
-        "--catalog",
-        default=config.get("catalog"),
-        help="Use this catalog as a reference",
-    )
-    parser.add_argument(
-        "-d",
-        "--date",
-        action="store",
-        help="what to put into the third column (char,mid,bjd), default=mid",
-    )
-    parser.add_argument(
-        "-e",
-        "--enlarge",
-        type=float,
-        default=config.get("enlarge"),
-        help="Enlarge catalog search region",
-    )
-    parser.add_argument(
-        "-f",
-        "--filter",
-        default=config.get("filter"),
-        help="Override filter info from fits",
-    )
-    parser.add_argument(
-        "--fsr",
-        help="Use forward stepwise regression",
-        default=config.get("fsr", "False"),
-    )
-    parser.add_argument(
-        "--fsr-terms",
-        help="Terms to be used to do forward stepwise regression",
-        default=config.get("fsr_terms", None),
-    )
-    parser.add_argument("-F", "--flat", help="Produce flats", action="store_true")
-    parser.add_argument(
-        "-g",
-        "--guessbase",
-        action="store_true",
-        default=config.get("guessbase", "False"),
-        help="Try and set base filter from fits header (implies -j if Bessel filter is found)",
-    )
-    parser.add_argument(
-        "-j",
-        "--johnson",
-        action="store_true",
-        default=config.get("johnson", "False"),
-        help="Use Stetson Johnson/Cousins filters and not SDSS",
-    )
-    parser.add_argument(
-        "-X", "--tryflt", action="store_true", help="Try different filters (broken)"
-    )
-    parser.add_argument(
-        "-G",
-        "--gain",
-        action="store",
-        help="Provide camera gain",
-        type=float,
-        default=config.get("gain", 2.3),
-    )
-    parser.add_argument(
-        "-i",
-        "--idlimit",
-        help="Set a custom idlimit",
-        type=float,
-        default=config.get("idlimit"),
-    )
-    parser.add_argument(
-        "-k",
-        "--makak",
-        help="Makak tweaks",
-        action="store_true",
-        default=config.get("makak", "False"),
-    )
-    parser.add_argument(
-        "-R",
-        "--redlim",
-        help="Do not get stars redder than this g-r",
-        type=float,
-        default=config.get("redlim"),
-    )
-    parser.add_argument(
-        "-B",
-        "--bluelim",
-        help="Do not get stars bler than this g-r",
-        type=float,
-        default=config.get("bluelim"),
-    )
-    parser.add_argument(
-        "-l",
-        "--maglim",
-        help="Do not get stars fainter than this limit",
-        type=float,
-        default=config.get("maglim"),
-    )
-    parser.add_argument(
-        "-L",
-        "--brightlim",
-        help="Do not get any less than this mag from the catalog to compare",
-        type=float,
-    )
-    parser.add_argument(
-        "-m",
-        "--median",
-        help="Give me just the median of zeropoints, no fitting",
-        action="store_true",
-    )
+    parser.add_argument("-a", "--astrometry", action="store_true", default=config.get('astrometry', 'False'), \
+                        help="Refit astrometric solution using photometry-selected stars")
+    parser.add_argument("-A", "--aterms", default=config.get('aterms'), help="Terms to fit for astrometry")
+    parser.add_argument("--usewcs", default=config.get('usewcs'), help="Use this astrometric solution (file with header)")
+    parser.add_argument("-b", "--basemag", default=config.get('basemag', None),
+                        help="ID of the base filter to be used while fitting (def=\"Sloan_r\"/\"Johnson_V\")")
+    parser.add_argument("-C", "--catalog", default=config.get('catalog'), help="Use this catalog as a reference")
+    parser.add_argument("-d", "--date", action='store', help="what to put into the third column (char,mid,bjd), default=mid")
+    parser.add_argument("-e", "--enlarge", type=float, default=config.get('enlarge'), help="Enlarge catalog search region")
+    parser.add_argument("-f", "--filter", default=config.get('filter'), help="Override filter info from fits")
+    parser.add_argument("--fsr", help="Use forward stepwise regression", default=config.get('fsr', 'False') )
+    parser.add_argument("--fsr-terms", help="Terms to be used to do forward stepwise regression", default=config.get('fsr_terms', None) )
+    parser.add_argument("-F", "--flat", help="Produce flats", action='store_true')
+    parser.add_argument("-g", "--guessbase", action="store_true", default=config.get('guessbase', 'False'),
+                        help="Try and set base filter from fits header (implies -j if Bessel filter is found)")
+    parser.add_argument("-j", "--johnson", action="store_true", default=config.get('johnson', 'False'),
+                        help="Use Stetson Johnson/Cousins filters and not SDSS")
+    parser.add_argument("-X", "--tryflt", action='store_true', help="Try different filters (broken)")
+    parser.add_argument("-G", "--gain", action='store', help="Provide camera gain", type=float, default=config.get('gain', 2.3))
+    parser.add_argument("-i", "--idlimit", help="Set a custom idlimit", type=float, default=config.get('idlimit'))
+    parser.add_argument("-k", "--makak", help="Makak tweaks", action='store_true', default=config.get('makak','False'))
+    parser.add_argument("-R", "--redlim", help="Do not get stars redder than this g-r", type=float, default=config.get("redlim"))
+    parser.add_argument("-B", "--bluelim", help="Do not get stars bler than this g-r", type=float, default=config.get("bluelim"))
+    parser.add_argument("-l", "--maglim", help="Do not get stars fainter than this limit", type=float, default=config.get("maglim"))
+    parser.add_argument("-L", "--brightlim", help="Do not get any less than this mag from the catalog to compare", type=float)
+    parser.add_argument("-m", "--margin", help="Modify the magnitude margin for star selection (default=2.0)", type=float, default=config.get("margin",2.0))
     parser.add_argument("-M", "--model", help="Read model from a file", type=str)
     parser.add_argument(
         "-n",
