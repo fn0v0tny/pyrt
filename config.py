@@ -3,6 +3,8 @@
 import argparse
 import configparser
 import os
+from collections import OrderedDict
+import logging
 
 # from typing import Dict, Any
 
@@ -28,11 +30,11 @@ def load_config(config_file: str = None):
     :return: Dictionary containing configuration options including all DEFAULT keywords
     """
     # Load built-in defaults
-    default_config = configparser.ConfigParser()
+    default_config = configparser.ConfigParser(default_section=None)
     default_config.read_string(DEFAULT_CONFIG)
 
     # Create a new config parser for the file config
-    file_config = configparser.ConfigParser()
+    file_config = configparser.ConfigParser(default_section=None)
 
     # Load either the default config file or user-specified file
     if config_file:
@@ -46,24 +48,23 @@ def load_config(config_file: str = None):
     # Start with all keywords from the built-in DEFAULT section
     result = dict(default_config["DEFAULT"])
 
-    # Add all keywords from the file's DEFAULT section, preserving existing ones
-    if "DEFAULT" in file_config:
-        for key, value in file_config["DEFAULT"].items():
-            if key not in result:  # Only add if not already present
-                result[key] = value
+    # Add all keywords from the file's DEFAULT section, overriding the defaults if they exist
+    if 'DEFAULT' in file_config:
+        for key, value in file_config['DEFAULT'].items():
+            result[key] = value
 
-    # Handle FILTER_SCHEMAS section if present in file config
-    if "FILTER_SCHEMAS" in file_config:
-        result["filter_schemas"] = {}  # OrderedDict()
-        for schema_name, filters in file_config["FILTER_SCHEMAS"].items():
-            # Use a list instead of a set to maintain order
-            result["filter_schemas"][schema_name] = [
-                f.strip() for f in filters.split(",")
-            ]
-        print(
-            "filter schemas from config file: ",
-            {k: v for k, v in result["filter_schemas"].items()},
-        )
+    # Handle FILTER_SCHEMAS separately
+    result['filter_schemas'] = OrderedDict()
+
+    # First add schemas from default config
+    if 'FILTER_SCHEMAS' in default_config:
+        for schema_name, filters in default_config['FILTER_SCHEMAS'].items():
+            result['filter_schemas'][schema_name] = [f.strip() for f in filters.split(',')]
+
+    # Then override/add schemas from file config
+    if 'FILTER_SCHEMAS' in file_config:
+        for schema_name, filters in file_config['FILTER_SCHEMAS'].items():
+            result['filter_schemas'][schema_name] = [f.strip() for f in filters.split(',')]
 
     return result
 
