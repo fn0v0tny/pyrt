@@ -177,21 +177,34 @@ class FotFit(termfit.termfit):
         values = np.asarray(values)
         img = np.int64(img)
 
-        model = np.zeros_like(mc)
         radius2 = coord_x ** 2 + coord_y ** 2
+
+        # Convert instrumental magnitude to counts
+        counts = 10.0 ** (-0.4 * mc)
+
+        # Transform counts to be relative to reference point
+        REFERENCE_COUNTS = 10000.0
+        OFFSET = 0.01
+        transformed_counts = (counts + OFFSET) / REFERENCE_COUNTS
+        mct = -2.5 * np.log10(transformed_counts)
+
+        # Calculate base magnitude relative to reference point
+        model = mct
 
         val2 = np.concatenate(
             (values[0 : len(self.fitterms)], np.array(self.fixvalues))
         )
 
+        # Variables to collect rational function parameters
+        rational_a = rational_b = rational_c = 0
+
         for term, value in zip(self.fitterms + self.fixterms, val2):
-            if term == "N1":
-                model += (1 + value) * mc
-            elif term == "N2":
-                model += value * mc ** 2
-            elif term == "N3":
-                model += value * mc ** 3
-            # Sub-pixel variation terms
+            if term == "RA":  # Rational function parameter a
+                rational_a = value
+            elif term == "RB":  # Rational function parameter b
+                rational_b = value
+            elif term == "RC":  # Rational function parameter c
+                rational_c = value
             elif term == "SX":
                 # Sinusoidal variation in X direction
                 frac_x = cat_x - np.floor(cat_x)
@@ -215,6 +228,7 @@ class FotFit(termfit.termfit):
                     "R": radius2,
                     "X": coord_x,
                     "Y": coord_y,
+                    "N": mct,
                 }
                 pterm = value
                 n = 1
@@ -275,6 +289,11 @@ class FotFit(termfit.termfit):
         if "ea" in locals() and "ew" in locals():
             foo = np.sqrt(radius2 / ew)
             model += ea * (np.exp(foo) / (foo + 1) - 1)
+
+        if any([rational_a, rational_b, rational_c]):
+            x = mct
+            rational_correction = (rational_a + rational_b * x) / (1 + rational_c * x)
+            model += rational_correction
 
         if self.fit_xy:
             N = (len(values) - len(self.fitterms)) // 3
