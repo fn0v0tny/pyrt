@@ -697,27 +697,39 @@ class Catalog(astropy.table.Table):
         except Exception as e:
             raise ValueError(f"USNO-B query failed: {str(e)}") from e
 
-    def _get_makak_data(self) -> Optional[astropy.table.Table]:
-        """Get data from pre-filtered MAKAK catalog."""
-        try:
+    def _get_makak_data(self):
+        """Get data from pre-filtered MAKAK catalog"""
+        #        try:
+        if True:
             config = self.KNOWN_CATALOGS[self.MAKAK]
 
             # Read the pre-filtered catalog
             cat = astropy.table.Table.read(config["filepath"])
-            if self._query_params.ra is None or self._query_params.dec is None:
-                raise ValueError("RA and DEC are required for MAKAK catalog access")
+
+            # Convert coordinates to degrees if they have units
+            if hasattr(cat["radeg"], "unit"):
+                cat["radeg"] = cat["radeg"].value
+            if hasattr(cat["decdeg"], "unit"):
+                cat["decdeg"] = cat["decdeg"].value
+
             # Filter by field of view
             ctr = SkyCoord(
                 self._query_params.ra * u.deg,
                 self._query_params.dec * u.deg,
                 frame="fk5",
             )
-            corner = SkyCoord(
+            corner1 = SkyCoord(
                 (self._query_params.ra + self._query_params.width) * u.deg,
                 (self._query_params.dec + self._query_params.height) * u.deg,
                 frame="fk5",
             )
-            radius = corner.separation(ctr) / 2
+            corner2 = SkyCoord(
+                (self._query_params.ra - self._query_params.width) * u.deg,
+                (self._query_params.dec - self._query_params.height) * u.deg,
+                frame="fk5",
+            )
+            radius = max(corner1.separation(ctr) / 2, corner2.separation(ctr) / 2)
+            print(f"catalog.makak: fov radius: {radius} {radius}")
 
             cat_coords = SkyCoord(
                 cat["radeg"] * u.deg, cat["decdeg"] * u.deg, frame="fk5"
@@ -734,10 +746,15 @@ class Catalog(astropy.table.Table):
             if "pmdec" not in cat.columns:
                 cat["pmdec"] = np.zeros(len(cat), dtype=np.float64)
 
+            # Strip units from all columns to ensure compatibility
+            for col in cat.colnames:
+                if hasattr(cat[col], "unit"):
+                    cat[col] = cat[col].value
+
             return cat
 
-        except Exception as e:
-            raise ValueError(f"MAKAK catalog access failed: {str(e)}") from e
+    #        except Exception as e:
+    #            raise ValueError(f"MAKAK catalog access failed: {str(e)}")
 
     @classmethod
     def from_file(cls: Type[TableType], filename: str) -> TableType:
