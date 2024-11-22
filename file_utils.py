@@ -12,7 +12,7 @@ def try_img(arg, verbose=False):
         logging.info(f"Argument {arg} is a fits file")
         return arg, fitsfile
     except (FileNotFoundError, OSError):
-        logging.info(f"Argument {arg} is not a fits file")
+        logging.debug(f"Argument {arg} is not a fits file")
         return None, None
 
 
@@ -28,7 +28,7 @@ def try_sex(arg, verbose=False):
         UnicodeDecodeError,
         astropy.io.ascii.core.InconsistentTableError,
     ):
-        logging.info(f"Argument {arg} is not a sextractor catalog")
+        logging.debug(f"Argument {arg} is not a sextractor catalog")
         return None, None
 
 
@@ -40,7 +40,7 @@ def try_ecsv(arg, verbose=False):
         logging.info(f"Argument {arg} is an ascii/ecsv catalog")
         return arg, det
     except (FileNotFoundError, OSError, UnicodeDecodeError):
-        logging.info(f"Argument {arg} is not an ascii/ecsv catalog")
+        logging.debug(f"Argument {arg} is not an ascii/ecsv catalog")
         return None, None
 
 
@@ -57,7 +57,7 @@ def try_det(arg, verbose=False):
         logging.info(f"Argument {arg} is a table")
         return arg, detfile
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
-        logging.info(f"Argument {arg} is not a table")
+        logging.debug(f"Argument {arg} is not a table")
         return None, None
 
 
