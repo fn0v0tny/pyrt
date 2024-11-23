@@ -2,6 +2,7 @@ import os
 import astropy.io.fits
 import logging
 from contextlib import suppress
+from astropy.table import Table
 
 
 def try_img(arg, verbose=False):
@@ -47,13 +48,13 @@ def try_ecsv(arg, verbose=False):
 def try_det(arg, verbose=False):
     """Try to open arg as an ecsv file, exit cleanly if it does not happen"""
     try:
-        detfile = astropy.table.Table.read(arg, format="ascii.ecsv")
+        detfile = Table.read(arg, format="ascii.ecsv")
         logging.info(f"Argument {arg} is an ecsv table")
         return arg, detfile
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
         pass
     try:
-        detfile = astropy.table.Table.read(arg)
+        detfile = Table.read(arg)
         logging.info(f"Argument {arg} is a table")
         return arg, detfile
     except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError):
@@ -65,7 +66,7 @@ import astropy.table
 
 
 def write_region_file(
-    catalog: astropy.table.Table,
+    catalog: Table,
     filename: str,
     color: str = "red",
     shape: str = "circle",
