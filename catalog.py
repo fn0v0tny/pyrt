@@ -669,7 +669,7 @@ class Catalog(astropy.table.Table):
         """Get catalog epoch"""
         return float(self.meta.get("catalog_props", {}).get("epoch"))
 
-    def __array_finalize__(self, obj: 'astropy.table.Table' | None) -> None:
+    def __array_finalize__(self, obj: Optional[astropy.table.Table]) -> None:
         """Ensure proper handling of metadata during numpy operations"""
         super().__array_finalize__(obj)
         if obj is None:
@@ -827,17 +827,6 @@ class Catalog(astropy.table.Table):
 
             # Create output table
             transients = det[transient_mask].copy()
-
-            # Update metadata
-            transients.meta.update(
-                {
-                    "matching_radius": idlimit,
-                    "reference_catalog": self.catalog_name,
-                    "total_detections": len(det),
-                    "n_transients": len(transients),
-                    "matching_time": time.time(),
-                }
-            )
 
             return transients
 
