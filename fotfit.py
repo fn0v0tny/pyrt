@@ -5,31 +5,42 @@ Photometric response fitter
 (c) Martin Jelinek, ASU AV CR, 2023
 """
 
+from typing import Dict, List, Optional, Tuple, Union
+
 import numpy as np
+from astropy.table import Table
+from numpy.typing import NDArray
+from scipy.optimize import OptimizeResult
+
 import termfit
 import logging
 from astropy.table import Table
 
 # wishlist :)
-#from scipy.interpolate import RegularGridInterpolator
+# from scipy.interpolate import RegularGridInterpolator
 
-rad = np.pi/180.0
+rad = np.pi / 180.0
 
-class fotfit(termfit.termfit):
-    """Photometric response fitter
-    """
 
-    modelname = "FotFit photometric model"
-    fit_xy = False
-    zero = []
-    px = []
-    py = []
+class FotFit(termfit.termfit):
+    """Photometric response fitter"""
 
-    def __init__(self, proj=None, file=None, fit_xy=False):
+    modelname: str = "FotFit photometric model"
+    fit_xy: bool = False
+    zero: List[float] = []
+    px: List[float] = []
+    py: List[float] = []
+    base_filter: Optional[str] = None
+    color_filters: List[str] = []
+
+    def __init__(
+        self,
+        proj: Optional[str] = None,
+        file: Optional[str] = None,
+        fit_xy: bool = False,
+    ) -> None:
         """Start myself up"""
-
         super().__init__()
-
         self.fit_xy = fit_xy
         self.base_filter = None  # Store the filter used for fitting
         self.color_schema = None  # Store filters used for colors
@@ -38,28 +49,49 @@ class fotfit(termfit.termfit):
             self.readmodel(file)
             self.fixall()
 
-    def __str__(self):
-        """Generate dynamic 2D table for per-image terms + global terms"""
+        self.fit_xy = fit_xy
+
+    def __str__(self) -> str:
+        output = " img --zeropoint--- ------px------ ------py------ \n"
 
         # Collect all per-image terms and organize by base term and image
         per_image_data = {}  # {base_term: {img_num: (value, error), ...}}
         max_img_num = 0
 
-        # Process fitted terms
-        for i, (term, value) in enumerate(zip(self.fitterms, self.fitvalues)):
-            if ':' in term and term.split(':')[-1].isdigit():
-                base_term = term.rsplit(':', 1)[0]
-                img_num = int(term.split(':')[-1])
-                max_img_num = max(max_img_num, img_num)
+        if self.fit_xy:  # xcoord/ycoord/zeropoint for each image
+            N = np.int64((len(self.fitvalues) - len(self.fitterms)) / 3)
+        else:
+            N = np.int64(len(self.fitvalues) - len(self.fitterms))
 
+        for i in range(0, N):
+            try:
+                error = self.fiterrors[Nt + i]
+            except IndexError:
+                error = np.nan
+            output += " %03d %6.3f ± %-5.3f " % (
+                i,
+                self.fitvalues[Nt + i],
+                error,
+            )  # zero
+            if self.fit_xy:
                 try:
-                    error = self.fiterrors[i] if hasattr(self, 'fiterrors') else np.nan
-                except (IndexError, AttributeError):
+                    error = self.fiterrors[Nt + N + i]
+                except IndexError:
                     error = np.nan
+                output += "%6.3f ± %-5.3f " % (self.fitvalues[Nt + N + i], error)  # px
+                try:
+                    error = self.fiterrors[Nt + 2 * N + i]
+                except IndexError:
+                    error = np.nan
+                output += "%6.3f ± %-5.3f " % (
+                    self.fitvalues[Nt + 2 * N + i],
+                    error,
+                )  # py
+            output += "\n"
 
-                if base_term not in per_image_data:
-                    per_image_data[base_term] = {}
-                per_image_data[base_term][img_num] = (value, error)
+            if base_term not in per_image_data:
+                per_image_data[base_term] = {}
+            per_image_data[base_term][img_num] = (value, error)
 
         # Process fixed terms
         for term, value in zip(self.fixterms, self.fixvalues):
@@ -103,139 +135,39 @@ class fotfit(termfit.termfit):
 
         # Add global terms from parent class
         output += termfit.termfit.__str__(self)
-
         return output
 
-    def set_filter_info(self, base_filter, color_schema):
+    def set_filter_info(self, base_filter: str, color_filters: List[str]) -> None:
         """Store filter information used in the fit"""
         self.base_filter = base_filter
         self.color_schema = color_schema
 
-    def fit(self, data):
-
-        self.fitvalues = self.fitvalues[0:(len(self.fitterms))] + self.zero
+    def fit(self, data: Tuple[NDArray, ...]) -> OptimizeResult:
+        self.fitvalues = self.fitvalues[0 : (len(self.fitterms))] + self.zero
         if self.fit_xy:
-            self.fitvalues = np.append(self.fitvalues, np.zeros(2*len(self.zero)))
+            self.fitvalues = np.append(self.fitvalues, np.zeros(2 * len(self.zero)))
         ret = termfit.termfit.fit(self, data)
         return ret
 
-    def zero_val(self):
-        """Calculate effective zeropoint values by evaluating model at reference conditions
+    def zero_val(self) -> Tuple[NDArray, NDArray]:
+        p = len(self.fitterms)
+        return self.fitvalues[p:], self.fiterrors[p:]
 
-        This works universally whether you have individual Z:n terms or a global model.
-        For each image, evaluates the model at:
-        - Image center coordinates (0, 0)
-        - Actual airmass for that image
-        - Zero colors
-        - 0 magnitude star
-
-        Returns
-        -------
-        zeropoint_values : array
-            Effective zeropoint for each image
-        zeropoint_errors : array
-            Zeropoint uncertainties (from Z:n terms if available, otherwise 0.0)
-        """
-        # First, collect explicit Z:n terms and their errors for fallback
-        zn_errors = {}
-        for i, term in enumerate(self.fitterms):
-            if term.startswith('Z:') and term.split(':')[-1].isdigit():
-                img_num = int(term.split(':')[-1]) - 1  # Convert to 0-based indexing
-                try:
-                    zn_errors[img_num] = self.fiterrors[i] if hasattr(self, 'fiterrors') else 0.0
-                except (IndexError, AttributeError):
-                    zn_errors[img_num] = 0.0
-
-        # Find global zeropoint error for cases without individual Z:n terms
-        global_zp_error = 0.0
-        for i, term in enumerate(self.fitterms):
-            if term in ['Z', 'ZERO', 'ZP']:  # Common names for global zeropoint
-                try:
-                    global_zp_error = self.fiterrors[i] if hasattr(self, 'fiterrors') else 0.0
-                except (IndexError, AttributeError):
-                    global_zp_error = 0.0
-                break
-
-        # Determine number of images from terms or assume 1
-        max_img = 1  # Start with 1 image minimum
-        for term in self.fitterms + self.fixterms:
-            if ':' in term and term.split(':')[-1].isdigit():
-                img_num = int(term.split(':')[-1])
-                max_img = max(max_img, img_num)
-
-        num_images = max_img
-        zeropoint_values = []
-        zeropoint_errors = []
-
-        for img in range(num_images):
-            # Create reference data vector for image center, 0-mag star
-            # Data format: mc, airmass, coord_x, coord_y, color1, color2, color3, color4, img, y, err, cat_x, cat_y, airmass_abs
-
-            # Use image's actual airmass if available, otherwise use 1.0
-            airmass_val = 1.0  # Default
-            airmass_abs_val = 1.0  # Default
-
-            # Try to get airmass from image-specific terms or metadata
-            for i, term in enumerate(self.fixterms + self.fitterms):
-                if term == f'AIRMASS:{img+1}':
-                    # Found image-specific airmass
-                    if i < len(self.fixterms):
-                        airmass_val = airmass_abs_val = self.fixvalues[i]
-                    else:
-                        val_idx = i - len(self.fixterms)
-                        airmass_val = airmass_abs_val = self.fitvalues[val_idx]
-                    break
-
-            # Model expects 14 parameters: mc, airmass, coord_x, coord_y, color1, color2, color3, color4, img, y, err, cat_x, cat_y, airmass_abs
-            # Make arrays with single values to match model expectations
-            try:
-                single_val_data = (
-                    np.array([0.0]),                    # mc: 0-magnitude star
-                    np.array([airmass_val]),            # airmass
-                    np.array([0.0]),                    # coord_x: image center (normalized)
-                    np.array([0.0]),                    # coord_y: image center (normalized)
-                    np.array([0.0]), np.array([0.0]),   # colors
-                    np.array([0.0]), np.array([0.0]),   # colors
-                    np.array([img]),                    # img: image index
-                    np.array([0.0]),                    # y: not used
-                    np.array([1.0]),                    # err: not used
-                    np.array([0.0]),                    # cat_x: image center
-                    np.array([0.0]),                    # cat_y: image center
-                    np.array([airmass_abs_val])         # airmass_abs
-                )
-
-                zp_val = self.model(np.array(self.fitvalues), single_val_data)
-
-                # Handle scalar or array return
-                logging.debug(f"Model returned: {zp_val} (type: {type(zp_val)})")
-                if hasattr(zp_val, '__len__') and len(zp_val) > 0:
-                    zeropoint_values.append(float(zp_val[0]))
-                else:
-                    zeropoint_values.append(float(zp_val))
-
-            except Exception as e:
-                # Fallback if model evaluation fails
-                logging.warning(f"Model evaluation failed for img {img}: {e}")
-                zeropoint_values.append(25.0)
-
-            # Get error: use Z:n error if available, otherwise global error
-            if img in zn_errors:
-                zeropoint_errors.append(zn_errors[img])
-            else:
-                zeropoint_errors.append(global_zp_error)
-
-        return np.array(zeropoint_values), np.array(zeropoint_errors)
-
-    def mesh_flat(self, x, y, ctrx=512, ctry=512, img=0):
+    def mesh_flat(
+        self, x: NDArray, y: NDArray, ctrx: float = 512, ctry: float = 512, img: int = 0
+    ) -> NDArray:
         """
         Generate flat field data efficiently for a given image using the existing model function.
 
-        :param x: 2D array of x-coordinates
-        :param y: 2D array of y-coordinates
-        :param ctrx: x-coordinate of the image center
-        :param ctry: y-coordinate of the image center
-        :param img: image number
-        :return: 2D array of flat field data
+        Args:
+            x: 2D array of x-coordinates
+            y: 2D array of y-coordinates
+            ctrx: x-coordinate of the image center
+            ctry: y-coordinate of the image center
+            img: image number
+
+        Returns:
+            2D array of flat field data
         """
 
         x_fine = x.astype(float) + 0.5  # Center of pixels
@@ -249,7 +181,7 @@ class fotfit(termfit.termfit):
         shape = x.shape
         data = (
             np.zeros(shape),  # mc (magnitude)
-            np.ones(shape),   # airmass (set to 1 for flat field)
+            np.ones(shape),  # airmass (set to 1 for flat field)
             coord_x,
             coord_y,
             np.zeros(shape),  # color1
@@ -258,156 +190,187 @@ class fotfit(termfit.termfit):
             np.zeros(shape),  # color4
             np.full(shape, img),
             np.zeros(shape),  # y (not used in flat field calculation)
-            np.ones(shape), # err (set to 1, not used in model calculation)
-            x_fine, y_fine,
-            np.ones(shape)   # airmass_abs (set to 1 for flat field)
-            )
+            np.ones(shape),  # err (set to 1, not used in model calculation)
+        )
 
-        # Use the existing model function to calculate the flat field
         return self.model(self.fitvalues, data)
 
-    def old_flat(self, x, y, ctrx=512, ctry=512, img=0):
-        return self.model(np.array(self.fitvalues), (0, 1, (x-ctrx)/1024., (y-ctry)/1024., 0, 0, 0, 0, img, 0, 0))
+    def old_flat(
+        self, x: NDArray, y: NDArray, ctrx: float = 512, ctry: float = 512, img: int = 0
+    ) -> NDArray:
+        return self.model(
+            np.array(self.fitvalues),
+            (0, 1, (x - ctrx) / 1024.0, (y - ctry) / 1024.0, 0, 0, 0, 0, img, 0, 0),
+        )
 
-    def hyperbola(self, x, y):
-        return (y*np.sqrt(1.0*x*x/y/y)+x)/2.0
+    def hyperbola(self, x: float, y: float) -> float:
+        return (y * np.sqrt(1.0 * x * x / y / y) + x) / 2.0
 
-    def model(self, values, data):
+    def model(self, values: NDArray, data: Tuple[NDArray, ...]) -> NDArray:
         """Optimized photometric response model"""
-        mc, airmass, coord_x, coord_y, color1, color2, color3, color4, img, y, err, cat_x, cat_y, airmass_abs = data
+        (
+            mc,
+            airmass,
+            coord_x,
+            coord_y,
+            color1,
+            color2,
+            color3,
+            color4,
+            img,
+            y,
+            err,
+        ) = data
         values = np.asarray(values)
         img = np.int64(img)
 
-        radius2 = coord_x**2 + coord_y**2
+        model = np.zeros_like(mc)
+        radius2 = coord_x ** 2 + coord_y ** 2
 
-        # Apply reference magnitude offset for numerical stability
-        # Calculate base magnitude relative to reference point
-        model = mct = mc + 10
-
-        val2 = np.concatenate((values[0:len(self.fitterms)], np.array(self.fixvalues)))
+        val2 = np.concatenate(
+            (values[0 : len(self.fitterms)], np.array(self.fixvalues))
+        )
 
         # Variables to collect rational function parameters
         rational_s = rational_o = rational_c = 0
 
         for term, value in zip(self.fitterms + self.fixterms, val2):
-            # Check if this is a per-image term (has :n suffix)
-            if ':' in term and term.split(':')[-1].isdigit():
-                base_term = term.rsplit(':', 1)[0]
-                term_img = int(term.split(':')[-1]) - 1  # Convert to 0-based indexing
-                # Only apply this term to data points from the specified image
-                img_mask = (img == term_img)
-                if not np.any(img_mask):
-                    continue  # Skip if no data points from this image
-                term_to_process = base_term
-            else:
-                # Global term - apply to all images
-                img_mask = np.ones_like(img, dtype=bool)
-                term_to_process = term
-
-            if term_to_process == 'Z':  # Zeropoint for this image
-                # Apply 10 mag shift for numerical stability (astronomical zeropoint - 10)
-                model[img_mask] += (value - 10.0)
-            elif term_to_process == 'RS':  # Rational function parameter scale
-                rational_s = value
-            elif term_to_process == 'RO':  # Rational function parameter offset
-                rational_o = value
-            elif term_to_process == 'RC':  # Rational function parameter curvature
-                rational_c = value
-            elif term_to_process == 'SX':
-                # Sinusoidal variation in X direction
-                frac_x = cat_x - np.floor(cat_x)
-                model[img_mask] += value * np.sin(np.pi * frac_x[img_mask])
-            elif term_to_process == 'SY':
-                # Sinusoidal variation in Y direction
-                frac_y = cat_y - np.floor(cat_y)
-                model[img_mask] += value * np.sin(np.pi * frac_y[img_mask])
-            elif term_to_process == 'SXY':
-                # Cross-term for X-Y sub-pixel variations
-                frac_x = cat_x - np.floor(cat_x)
-                frac_y = cat_y - np.floor(cat_y)
-                model[img_mask] += value * np.sin(np.pi * frac_x[img_mask]) * np.sin(np.pi * frac_y[img_mask])
-            elif term_to_process[0] == 'P':
-                components = {'A': airmass_abs, 'B': airmass, 'C': color1, 'D': color2, 'E': color3, 'F': color4,
-                              'R': radius2, 'X': coord_x, 'Y': coord_y, 'N': mct }
-                pterm = np.full_like(model, value)
+            if term == "N1":
+                model += (1 + value) * mc
+            elif term == "N2":
+                model += value * mc ** 2
+            elif term == "N3":
+                model += value * mc ** 3
+            elif term[0] == "P":
+                components: Dict[str, NDArray] = {
+                    "A": airmass,
+                    "C": color1,
+                    "D": color2,
+                    "E": color3,
+                    "F": color4,
+                    "R": radius2,
+                    "X": coord_x,
+                    "Y": coord_y,
+                }
+                pterm = value
                 n = 1
                 for a in term_to_process[1:]:
                     if a.isdigit():
                         n = int(a)
                     elif a in components:
-                        pterm *= components[a]**n
+                        pterm *= components[a] ** n
                         n = 1
-                model[img_mask] += pterm[img_mask]
-            elif term_to_process == 'GA': ga = value
-            elif term_to_process == 'GW': gw = 10**value
-            elif term_to_process == 'EA': ea = value
-            elif term_to_process == 'EW': ew = value
-            elif term_to_process == 'EQ': eq = value
-            elif term_to_process == 'HA': ha = value
-            elif term_to_process == 'HM': hm = value
-            elif term_to_process == 'HN': hn = value
-            elif term_to_process == 'XC':
-                bval = np.where(value < 0, value * color1,
-                                np.where(value <= 1, value * color2,
-                                         (value - 1) * color3 + color2))
-                model[img_mask] += bval[img_mask]
-            elif term_to_process == 'SC':
+                model += pterm
+            elif term == "GA":
+                ga = value
+            elif term == "GW":
+                gw = 10 ** value
+            elif term == "EA":
+                ea = value
+            elif term == "EW":
+                ew = value
+            elif term == "EQ":
+                eq = value
+            elif term == "HA":
+                ha = value
+            elif term == "HM":
+                hm = value
+            elif term == "HN":
+                hn = value
+            elif term == "XC":
+                bval = np.where(
+                    value < 0,
+                    value * color1,
+                    np.where(value <= 1, value * color2, (value - 1) * color3 + color2),
+                )
+                model += bval
+            elif term == "SC":
                 s = np.sin(value * np.pi)
                 w1 = 0.5 * (-s + 1)
                 w2 = 0.5 * (s + 1)
-                bval = np.where(value < -0.5, value * color1,
-                                np.where(value < 0.5, w1 * value * color1 + w2 * value * color2,
-                                         np.where(value <= 1.5, color2 + w2 * (value - 1) * color2 + w1 * (value - 1) * color3,
-                                                  (value - 1) * color3 + color2)))
-                model[img_mask] += bval[img_mask]
+                bval = np.where(
+                    value < -0.5,
+                    value * color1,
+                    np.where(
+                        value < 0.5,
+                        w1 * value * color1 + w2 * value * color2,
+                        np.where(
+                            value <= 1.5,
+                            color2
+                            + w2 * (value - 1) * color2
+                            + w1 * (value - 1) * color3,
+                            (value - 1) * color3 + color2,
+                        ),
+                    ),
+                )
+                model += bval
 
-        if 'ga' in locals() and 'gw' in locals():
+        if "ga" in locals() and "gw" in locals():
             model += ga * np.exp(-radius2 * 25 / gw)
 
-        if 'ea' in locals() and 'ew' in locals():
+        if "ea" in locals() and "ew" in locals():
             foo = np.sqrt(radius2 / ew)
             model += ea * (np.exp(foo) / (foo + 1) - 1)
 
-        if any([rational_s, rational_o, rational_c]):
-            x = -mct - rational_o  # Center the effect
-            denom = 1 + rational_c * x * x  # Square term for stability
-            rational = rational_s * x / (denom + 1e-10)  # Small epsilon to prevent division by zero
-            model += rational
+        if self.fit_xy:
+            N = (len(values) - len(self.fitterms)) // 3
+            zeros = values[len(self.fitterms) : len(self.fitterms) + N]
+            px = values[len(self.fitterms) + N : len(self.fitterms) + 2 * N]
+            py = values[len(self.fitterms) + 2 * N : len(self.fitterms) + 3 * N]
 
-        # Zeropoints are now handled as regular Z:n terms in the main loop above
-        # No need for special zeropoint handling here
+            model += px[img] * coord_x + py[img] * coord_y + zeros[img]
+        else:
+            zeros = values[len(self.fitterms) :]
+            model += zeros[img]
 
         return model
 
-    def isnumber(self, a):
+    def isnumber(self, a: str) -> bool:
         try:
-            k=int(a)
+            k = int(a)
             return True
         except:
             return False
 
-    def residuals0(self, values, data):
+    def residuals0(self, values: NDArray, data: Tuple[NDArray, ...]) -> NDArray:
         """pure residuals to compute sigma and similar things"""
-        mc, airmass, coord_x, coord_y, color1, color2, color3, color4, img, y, err, cat_x, cat_y, airmass_abs = data
+        (
+            mc,
+            airmass,
+            coord_x,
+            coord_y,
+            color1,
+            color2,
+            color3,
+            color4,
+            img,
+            y,
+            err,
+        ) = data
         return np.abs(y - self.model(values, data))
 
-    def fit_residuals(self, values, data):
-        """residuals for fitting with robust weighting - prioritizes bright stars"""
-        mc, airmass, coord_x, coord_y, color1, color2, color3, color4, img, y, err, cat_x, cat_y, airmass_abs = data
-        # Higher power of err prioritizes bright stars during fitting
-        dist = np.abs((y - self.model(values, data))/np.power(err,2.5))
+    def residuals(self, values: NDArray, data: Tuple[NDArray, ...]) -> NDArray:
+        """residuals for fitting with error weighting and delinearization"""
+        (
+            mc,
+            airmass,
+            coord_x,
+            coord_y,
+            color1,
+            color2,
+            color3,
+            color4,
+            img,
+            y,
+            err,
+        ) = data
+        dist = np.abs((y - self.model(values, data)) / err)
         if self.delin:
             return self.cauchy_delin(dist)
         else:
             return dist
 
-    def residuals(self, values, data):
-        """proper chi-squared residuals for statistics calculation"""
-        mc, airmass, coord_x, coord_y, color1, color2, color3, color4, img, y, err, cat_x, cat_y, airmass_abs = data
-        # Standard 1/sigma weighting for proper chi-squared statistics
-        return (y - self.model(values, data)) / err
-
-    def oneline(self):
+    def oneline(self) -> str:
         """Enhanced model string with filter information"""
         output=[]
         # Start with filter information
@@ -417,15 +380,18 @@ class fotfit(termfit.termfit):
             output.append(f"SCHEMA={self.color_schema}")
 
         # Add all fitted and fixed terms
-        for term, value in zip(self.fixterms + self.fitterms,
-                             self.fixvalues + self.fitvalues):
-            output.append(f"{term}={value}")
+        for term, value in zip(
+            self.fixterms + self.fitterms, self.fixvalues + self.fitvalues
+        ):
+            output += f",{term}={value}"
 
         # If fit_xy is True, handle the px/py arrays
         if self.fit_xy:
             N = (len(self.fitvalues) - len(self.fitterms)) // 3
-            px = self.fitvalues[len(self.fitterms) + N:len(self.fitterms) + 2*N]
-            py = self.fitvalues[len(self.fitterms) + 2*N:len(self.fitterms) + 3*N]
+            px = self.fitvalues[len(self.fitterms) + N : len(self.fitterms) + 2 * N]
+            py = self.fitvalues[len(self.fitterms) + 2 * N : len(self.fitterms) + 3 * N]
+            for i, (px_val, py_val) in enumerate(zip(px, py)):
+                output += f",PX{i}={px_val},PY{i}={py_val}"
 
             # Include only the PX/PY values for the current image
             # But need to know which image we're writing for...
@@ -466,23 +432,24 @@ class fotfit(termfit.termfit):
 
         return ",".join(output)
 
-    def savemodel(self, file):
+    def savemodel(self, file: str) -> None:
         """Enhanced model saving with complete metadata"""
         model_table = Table()
 
         # Add filter information
-        model_table.meta['base_filter'] = self.base_filter
-        model_table.meta['color_schema'] = self.color_schema
-        model_table.meta['fit_xy'] = self.fit_xy
+        model_table.meta["base_filter"] = self.base_filter
+        model_table.meta["color_filters"] = ",".join(self.color_filters)
+        model_table.meta["fit_xy"] = self.fit_xy
 
         # Add terms and values
-        terms = []
-        values = []
-        errors = []
+        terms: List[str] = []
+        values: List[float] = []
+        errors: List[float] = []
 
         # Add regular terms
-        for term, value in zip(self.fitterms + self.fixterms,
-                             self.fitvalues + self.fixvalues):
+        for term, value in zip(
+            self.fitterms + self.fixterms, self.fitvalues + self.fixvalues
+        ):
             terms.append(term)
             values.append(value)
             try:
@@ -494,34 +461,34 @@ class fotfit(termfit.termfit):
         # Add per-image PX/PY terms if fit_xy is True
         if self.fit_xy:
             N = (len(self.fitvalues) - len(self.fitterms)) // 3
-            px = self.fitvalues[len(self.fitterms) + N:len(self.fitterms) + 2*N]
-            py = self.fitvalues[len(self.fitterms) + 2*N:len(self.fitterms) + 3*N]
+            px = self.fitvalues[len(self.fitterms) + N : len(self.fitterms) + 2 * N]
+            py = self.fitvalues[len(self.fitterms) + 2 * N : len(self.fitterms) + 3 * N]
             for i, (px_val, py_val) in enumerate(zip(px, py)):
-                terms.extend([f'PX{i}', f'PY{i}'])
+                terms.extend([f"PX{i}", f"PY{i}"])
                 values.extend([px_val, py_val])
                 errors.extend([0, 0])  # These are fitted but we don't save their errors
 
-        model_table['term'] = terms
-        model_table['val'] = values
-        model_table['err'] = errors
+        model_table["term"] = terms
+        model_table["val"] = values
+        model_table["err"] = errors
 
-        model_table.meta['name'] = self.modelname
-        model_table.meta['sigma'] = self.sigma
-        model_table.meta['variance'] = self.variance
-        model_table.meta['wssrndf'] = self.wssrndf
+        model_table.meta["name"] = self.modelname
+        model_table.meta["sigma"] = self.sigma
+        model_table.meta["variance"] = self.variance
+        model_table.meta["wssrndf"] = self.wssrndf
 
-        model_table.write(file, format='ascii.ecsv', overwrite=True)
+        model_table.write(file, format="ascii.ecsv", overwrite=True)
 
-    def readmodel(self, file):
+    def readmodel(self, file: str) -> None:
         """Enhanced model reading with filter information"""
-        model_table = Table.read(file, format='ascii.ecsv')
+        model_table = Table.read(file, format="ascii.ecsv")
 
         # Read filter information
-        self.base_filter = model_table.meta.get('base_filter')
-        color_schema = model_table.meta.get('color_schema')
-        #if color_schema is not None:
-        #    self.color_schema = color_schema.split(',')
-        self.fit_xy = model_table.meta.get('fit_xy', False)
+        self.base_filter = model_table.meta.get("base_filter")
+        color_filters = model_table.meta.get("color_filters")
+        if color_filters:
+            self.color_filters = color_filters.split(",")
+        self.fit_xy = model_table.meta.get("fit_xy", False)
 
         # Clear existing terms
         self.fixterms = []
@@ -532,24 +499,24 @@ class fotfit(termfit.termfit):
 
         # Read terms, handling PX/PY specially for fit_xy mode
         for param in model_table:
-            term = param['term']
-            if term.startswith(('PX', 'PY')) and self.fit_xy:
+            term = param["term"]
+            if term.startswith(("PX", "PY")) and self.fit_xy:
                 # These will be handled by the fitting process
                 continue
-            elif param['err'] == 0:
+            elif param["err"] == 0:
                 self.fixterms.append(term)
-                self.fixvalues.append(param['val'])
+                self.fixvalues.append(param["val"])
             else:
                 self.fitterms.append(term)
-                self.fitvalues.append(param['val'])
-                self.fiterrors.append(param['err'])
+                self.fitvalues.append(param["val"])
+                self.fiterrors.append(param["err"])
 
         # Read statistics
-        #self.sigma = model_table.meta['sigma']
-        #self.variance = model_table.meta['variance']
-        #self.wssrndf = model_table.meta['wssrndf']
+        self.sigma = model_table.meta["sigma"]
+        self.variance = model_table.meta["variance"]
+        self.wssrndf = model_table.meta["wssrndf"]
 
-    def from_oneline(self, line):
+    def from_oneline(self, line: str) -> "FotFit":
         """
         Load model from a one-line string representation.
 
@@ -568,21 +535,31 @@ class fotfit(termfit.termfit):
         self.fiterrors = []
 
         # Parse terms
-        terms = line.split(',')
+        terms = line.split(",")
         img_px = {}  # Store PX terms by image number
         img_py = {}  # Store PY terms by image number
 
         for term in terms:
             try:
-                name, strvalue = term.split('=')
+                name, strvalue = term.split("=")
                 value = float(strvalue)
 
                 # Handle filter information
-                if name == 'FILTER':
+                if name == "FILTER":
                     self.base_filter = strvalue
                     continue
-                elif name == 'SCHEMA':
-                    self.color_schema = strvalue
+                elif name == "COLORS":
+                    self.color_filters = strvalue.split(";")
+                    continue
+
+                # Handle per-image PX/PY terms
+                if name.startswith("PX") and len(name) > 2:
+                    img_num = int(name[2:])
+                    img_px[img_num] = value
+                    continue
+                elif name.startswith("PY") and len(name) > 2:
+                    img_num = int(name[2:])
+                    img_py[img_num] = value
                     continue
 
                 # Add regular term
@@ -593,9 +570,28 @@ class fotfit(termfit.termfit):
                 print(f"Warning: Could not parse term '{term}': {e}")
                 continue
 
+        # Handle fit_xy mode if per-image PX/PY terms were found
+        if img_px or img_py:
+            self.fit_xy = True
+            max_img = max(
+                max(img_px.keys(), default=-1), max(img_py.keys(), default=-1)
+            )
+
+            # Fill in any missing image numbers with zeros
+            for i in range(max_img + 1):
+                if i not in img_px:
+                    img_px[i] = 0.0
+                if i not in img_py:
+                    img_py[i] = 0.0
+
+            # Add sorted PX/PY values to fixvalues
+            for i in range(max_img + 1):
+                self.fixterms.extend([f"PX{i}", f"PY{i}"])
+                self.fixvalues.extend([img_px[i], img_py[i]])
+
         return self
 
-    def model_from_string(self, model_string, data):
+    def model_from_string(self, model_string: str, data: tuple) -> NDArray:
         """
         Convenience method to load model from string and immediately apply it.
 
