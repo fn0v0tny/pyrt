@@ -9,7 +9,7 @@ from catalog import Catalog, QueryParams
 
 
 class TransientAnalyzer:
-    """Combined system for transient detection and feature extraction"""
+    """Combined system for transient detection and feature extraction."""
 
     def __init__(self) -> None:
         # Detection features we want to extract if available
@@ -49,8 +49,7 @@ class TransientAnalyzer:
         radius_check: float = 30.0,
         filter_pattern: Optional[str] = None,
     ) -> Dict[str, Table]:
-        """
-        Find and analyze transient candidates using multiple catalogs
+        """Find and analyze transient candidates using multiple catalogs.
         
         Args:
             detections: Detection table
@@ -94,8 +93,7 @@ class TransientAnalyzer:
         return results
 
     def _add_detection_features(self, candidates: Table) -> None:
-        """Add detection-based features to candidate table"""
-
+        """Add detection-based features to candidate table."""
         # Shape features
         if all(f in candidates.columns for f in ["A_IMAGE", "B_IMAGE"]):
             candidates["axis_ratio"] = candidates["B_IMAGE"] / candidates["A_IMAGE"]
@@ -134,8 +132,7 @@ class TransientAnalyzer:
         radius: float,
         filter_pattern: Optional[str] = None,
     ) -> None:
-        """
-        Add contextual information from catalog
+        """Add contextual information from catalog.
         
         Args:
             candidates: Candidate table
@@ -197,8 +194,7 @@ class TransientAnalyzer:
                         ]
 
     def _add_quality_metrics(self, candidates: Table) -> None:
-        """Add computed quality metrics"""
-
+        """Add computed quality metrics."""
         quality_score = np.ones(len(candidates))
 
         # Shape-based scores
@@ -229,8 +225,7 @@ class TransientAnalyzer:
 def combine_results(
     transients: Dict[str, Table], min_catalogs: int = 1, min_quality: float = 0.5
 ) -> Table:
-    """
-    Combine and filter transient candidates from multiple catalogs
+    """Combine and filter transient candidates from multiple catalogs.
     
     Args:
         transients: Dictionary of transient tables from different catalogs

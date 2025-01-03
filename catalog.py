@@ -24,7 +24,7 @@ FilterDict = Dict[str, "CatalogFilter"]
 
 @dataclass
 class QueryParams:
-    """Parameters used for catalog queries"""
+    """Parameters used for catalog queries."""
 
     ra: Optional[float] = None
     dec: Optional[float] = None
@@ -37,7 +37,7 @@ class QueryParams:
 
 @dataclass
 class CatalogFilter:
-    """Information about a filter in a catalog"""
+    """Information about a filter in a catalog."""
 
     name: str  # Original filter name in catalog
     effective_wl: float  # Effective wavelength in Angstroms
@@ -46,7 +46,7 @@ class CatalogFilter:
 
 
 class CatalogFilters:
-    """Filter definitions for different catalogs"""
+    """Filter definitions for different catalogs."""
 
     PANSTARRS: FilterDict
     GAIA: FilterDict
@@ -89,8 +89,8 @@ class CatalogFilters:
 
 
 class Catalog(astropy.table.Table):
-    """
-    Represents a stellar catalog with methods for retrieval and transformation.
+    """Represents a stellar catalog with methods for retrieval and transformation.
+    
     Inherits from astropy Table while providing catalog management functionality.
     """
 
@@ -238,7 +238,7 @@ class Catalog(astropy.table.Table):
         self._init_metadata()
 
     def _init_metadata(self) -> None:
-        """Initialize or update catalog metadata"""
+        """Initialize or update catalog metadata."""
         if "catalog_props" not in self.meta:
             self.meta["catalog_props"] = {}
 
@@ -256,17 +256,17 @@ class Catalog(astropy.table.Table):
 
     @property
     def query_params(self) -> Optional[QueryParams]:
-        """Get query parameters used to create this catalog"""
+        """Get query parameters used to create this catalog."""
         params_dict = self.meta.get("catalog_props", {}).get("query_params", {})
         return QueryParams(**params_dict) if params_dict else None
 
     @property
     def catalog_name(self) -> str:
-        """Get catalog name"""
+        """Get catalog name."""
         return str(self.meta.get("catalog_props", {}).get("catalog_name"))
 
     def _fetch_catalog_data(self) -> Optional[astropy.table.Table]:
-        """Fetch data from the specified catalog source"""
+        """Fetch data from the specified catalog source."""
         if self._catalog_name not in self.KNOWN_CATALOGS:
             raise ValueError(f"Unknown catalog: {self._catalog_name}")
 
@@ -298,7 +298,7 @@ class Catalog(astropy.table.Table):
         return result
 
     def _get_atlas_local(self) -> Optional[astropy.table.Table]:
-        """Get data from local ATLAS catalog"""
+        """Get data from local ATLAS catalog."""
         config = self.KNOWN_CATALOGS[self.ATLAS]
         result: Optional[astropy.table.Table] = None
 
@@ -321,7 +321,7 @@ class Catalog(astropy.table.Table):
         return result
 
     def _get_atlas_split(self, directory: str) -> Optional[astropy.table.Table]:
-        """Get data from one magnitude split of ATLAS catalog"""
+        """Get data from one magnitude split of ATLAS catalog."""
         with tempfile.NamedTemporaryFile(suffix=".ecsv", delete=False) as tmp:
             try:
                 cmd = f'ssh fnovotny@lascaux.asu.cas.cz "atlas {self._query_params.ra} {self._query_params.dec} -rect {self._query_params.width},{self._query_params.height} -dir {directory} -mlim {self._query_params.mlim:.2f} -ecsv"'
@@ -338,7 +338,7 @@ class Catalog(astropy.table.Table):
 
     @staticmethod
     def _add_transformed_magnitudes(cat: astropy.table.Table) -> None:
-        """Add transformed Johnson magnitudes"""
+        """Add transformed Johnson magnitudes."""
         gr = cat["Sloan_g"] - cat["Sloan_r"]
         ri = cat["Sloan_r"] - cat["Sloan_i"]
         iz = cat["Sloan_i"] - cat["Sloan_z"]
@@ -357,7 +357,7 @@ class Catalog(astropy.table.Table):
         cat["Johnson_I"] = cat["Sloan_r"] - 0.897087 * ri - 0.575316 * iz - 0.423971
 
     def _get_atlas_vizier(self) -> Optional[astropy.table.Table]:
-        """Get ATLAS RefCat2 data from VizieR with updated column mapping"""
+        """Get ATLAS RefCat2 data from VizieR with updated column mapping."""
         from astroquery.vizier import Vizier
 
         # Configure Vizier with correct column names
@@ -417,7 +417,7 @@ class Catalog(astropy.table.Table):
     #            return None
 
     def _get_panstarrs_data(self) -> Optional[astropy.table.Table]:
-        """Get PanSTARRS DR2 data"""
+        """Get PanSTARRS DR2 data."""
         from astroquery.mast import Catalogs
 
         config = self.KNOWN_CATALOGS[self.PANSTARRS]
@@ -465,7 +465,7 @@ class Catalog(astropy.table.Table):
     #            raise ValueError(f"PanSTARRS query failed: {str(e)}")
 
     def _get_gaia_data(self) -> Optional[astropy.table.Table]:
-        """Get Gaia DR3 data"""
+        """Get Gaia DR3 data."""
         try:
             from astroquery.gaia import Gaia
 
@@ -479,7 +479,7 @@ class Catalog(astropy.table.Table):
             FROM {config['catalog_id']}
             WHERE 1=CONTAINS(
                 POINT('ICRS', ra, dec),
-                BOX('ICRS', {self._query_params.ra}, {self._query_params.dec}, {self._query_params.width}, {self._query_params.height}))
+                BOX('ICRS', {self._query_params.ra}, {self._query_params.dec}, {2*self._query_params.width}, {2*self._query_params.height}))
                 AND phot_g_mean_mag < {self._query_params.mlim}
                 AND ruwe < 1.4
                 AND visibility_periods_used >= 8
@@ -516,7 +516,7 @@ class Catalog(astropy.table.Table):
             raise ValueError(f"Gaia query failed: {str(e)}") from e
 
     def _get_usnob_data(self) -> Optional[astropy.table.Table]:
-        """Get USNO-B1.0 data from VizieR"""
+        """Get USNO-B1.0 data from VizieR."""
         try:
             from astroquery.vizier import Vizier
 
@@ -542,8 +542,8 @@ class Catalog(astropy.table.Table):
             # Query VizieR
             result = vizier.query_region(
                 coords,
-                width=self._query_params.width * u.deg,
-                height=self._query_params.height * u.deg,
+                width=2*self._query_params.width * u.deg,
+                height=2*self._query_params.height * u.deg,
                 catalog=config["catalog_id"],
             )
 
@@ -589,7 +589,7 @@ class Catalog(astropy.table.Table):
             raise ValueError(f"USNO-B query failed: {str(e)}") from e
 
     def _get_makak_data(self) -> Optional[astropy.table.Table]:
-        """Get data from pre-filtered MAKAK catalog"""
+        """Get data from pre-filtered MAKAK catalog."""
         try:
             config = self.KNOWN_CATALOGS[self.MAKAK]
 
@@ -632,7 +632,7 @@ class Catalog(astropy.table.Table):
 
     @classmethod
     def from_file(cls: Type[TableType], filename: str) -> TableType:
-        """Create catalog instance from a local file with proper metadata handling"""
+        """Create catalog instance from a local file with proper metadata handling."""
         try:
             data = astropy.table.Table.read(filename)
             obj = cls(data.as_array())
@@ -653,24 +653,24 @@ class Catalog(astropy.table.Table):
 
     @property
     def description(self) -> str:
-        """Get catalog description"""
+        """Get catalog description."""
         return str(
             self.meta.get("catalog_props", {}).get("description", "Unknown catalog")
         )
 
     @property
     def filters(self) -> Dict[str, CatalogFilter]:
-        """Get available filters"""
+        """Get available filters."""
         filters_dict = self.meta.get("catalog_props", {}).get("filters", {})
         return {k: CatalogFilter(**v) for k, v in filters_dict.items()}
 
     @property
     def epoch(self) -> float:
-        """Get catalog epoch"""
+        """Get catalog epoch."""
         return float(self.meta.get("catalog_props", {}).get("epoch"))
 
     def __array_finalize__(self, obj: Optional[astropy.table.Table]) -> None:
-        """Ensure proper handling of metadata during numpy operations"""
+        """Ensure proper handling of metadata during numpy operations."""
         super().__array_finalize__(obj)
         if obj is None:
             return
@@ -681,8 +681,8 @@ class Catalog(astropy.table.Table):
                 self.meta = {}
             self.meta["catalog_props"] = obj.meta["catalog_props"].copy()
 
-    def copy(self, copy_data: bool=True) -> astropy.table.Table:
-        """Create a copy ensuring catalog properties are preserved"""
+    def copy(self, copy_data: bool = True) -> astropy.table.Table:
+        """Create a copy ensuring catalog properties are preserved."""
         new_cat = super().copy(copy_data=copy_data)
         if "catalog_props" in self.meta:
             new_cat.meta["catalog_props"] = self.meta["catalog_props"].copy()
@@ -691,8 +691,7 @@ class Catalog(astropy.table.Table):
     def transform_to_instrumental(
         self, det: astropy.table.Table, wcs: astropy.wcs.WCS
     ) -> Optional[astropy.table.Table]:
-        """
-        Transform catalog to instrumental system.
+        """Transform catalog to instrumental system.
 
         Args:
             det: Detection metadata table
@@ -790,9 +789,7 @@ class Catalog(astropy.table.Table):
     def get_transient_candidates(
         self, det: astropy.table.Table, idlimit: float = 5.0
     ) -> astropy.table.Table:
-        """
-        Identify transient candidates by comparing detections against catalog sources
-        using KDTree for efficient spatial matching.
+        """Identify transient candidates by comparing detections against catalog sources using KDTree for efficient spatial matching.
 
         Args:
             det (astropy.table.Table): Table of detected objects with X_IMAGE, Y_IMAGE columns
@@ -836,8 +833,7 @@ class Catalog(astropy.table.Table):
     def compute_magnitude_difference(
         self, det_without_transients: astropy.table.Table, filter: str
     ) -> astropy.table.Table:
-        """
-        Compute magnitude differences between detections and catalog sources.
+        """Compute magnitude differences between detections and catalog sources.
 
         Args:
             det_without_transients (astropy.table.Table):
@@ -932,8 +928,7 @@ class Catalog(astropy.table.Table):
     def match_with_external_catalog(
         self, other_cat: "Catalog", max_separation: float = 1.0
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Match sources with another catalog using sky coordinates.
+        """Match sources with another catalog using sky coordinates.
 
         Args:
             other_cat (Catalog): Another catalog instance to match against
@@ -960,7 +955,7 @@ class Catalog(astropy.table.Table):
 
 
 def add_catalog_argument(parser: Any) -> None:
-    """Add catalog selection argument to argument parser"""
+    """Add catalog selection argument to argument parser."""
     parser.add_argument(
         "--catalog",
         choices=Catalog.KNOWN_CATALOGS.keys(),
