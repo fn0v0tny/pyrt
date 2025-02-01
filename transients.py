@@ -3,8 +3,8 @@
 import os
 import sys
 import time
-from catalog import Catalog
 
+from catalog import Catalog
 
 if sys.version_info[0] * 1000 + sys.version_info[1] < 3008:
     print(
@@ -13,17 +13,17 @@ if sys.version_info[0] * 1000 + sys.version_info[1] < 3008:
     )
     exit(-1)
 
-import astropy
-import astropy.io.fits
-import astropy.wcs
-import astropy.table
-from astropy.coordinates import SkyCoord
-import numpy as np
 import argparse
 import json
 
+import astropy
+import astropy.io.fits
+import astropy.table
+import astropy.wcs
+import numpy as np
 import scipy.optimize as fit
-from sklearn.neighbors import KDTree, BallTree
+from astropy.coordinates import SkyCoord
+from sklearn.neighbors import BallTree, KDTree
 
 
 def try_grbt0(target):
@@ -223,32 +223,14 @@ def process_single_image(arg, options, frame, siglim, cat):
             return None
 
     # Calculate epoch for proper motion correction
-    epoch = (det.meta["JD"] - 2457204.5) / 365.2425
+    # the number can be converted from cat.epoch()*365.2425
 
     # Get reference catalogs
-    candidates = get_transient_candidates(
-        det, imgwcs, cat, options, epoch, frame, siglim
-    )
+    # prožer to jednou skrz atlas
+    idlimit = options.idlimit or det.meta.get("FWHM", 1.2)
+    candidates = cat.get_transient_candidates(det, idlimit, options)
     print("Comparison to catalogues produced", len(candidates), "candidates")
-
-    if options.regs:
-        save_region_file(candidates, det, options)
-
-    return candidates
-
-
-def get_transient_candidates(det, imgwcs, cat, options, epoch, frame, siglim):
-    """Get transient candidates by comparing with reference catalogs"""
-    # Apply proper motion correction - to be removed
-    cat["radeg"] += epoch * cat["pmra"]
-    cat["decdeg"] += epoch * cat["pmdec"]
-
-    # Match detections with catalog
-    candidates = match_and_filter_detections(det, cat, imgwcs, options, frame, siglim)
-    # If USNO option enabled, filter candidates against USNO
-    if options.usno and len(candidates) > 0:
-        candidates = filter_usno_matches(candidates, det, imgwcs, options)
-
+    # a pak znovu přes USNO
     return candidates
 
 
@@ -258,24 +240,8 @@ def match_and_filter_detections(det, cat, imgwcs, options, frame, siglim):
     if not isinstance(det, astropy.table.Table):
         det = astropy.table.Table(det)
 
-    # Transform catalog coordinates to pixel space
-    try:
-        cat_x, cat_y = imgwcs.all_world2pix(cat["radeg"], cat["decdeg"], 1)
-        cat_pixels = np.array([cat_x, cat_y]).transpose()
-    except:
-        return None
-
-    # Set up KD-tree for matching
-    idlimit = options.idlimit or det.meta.get("FWHM", 1.2)
-    tree = KDTree(cat_pixels)
-
-    # Match detections
-    det_pixels = np.array([[x, y] for x, y in zip(det["X_IMAGE"], det["Y_IMAGE"])])
-    matches_idx, matches_dist = tree.query_radius(
-        det_pixels, r=idlimit, return_distance=True
-    )
-
     # Filter and collect candidates
+    # to be removed from the function
     candidate_indices = []
     for i, (matches, detection) in enumerate(zip(matches_idx, det)):
         try:
@@ -362,100 +328,101 @@ def is_candidate(matches, detection, catalog, metadata, frame, siglim):
     return True
 
 
-def filter_usno_matches(candidates, det, imgwcs, options):
-    """Filter candidates by checking USNO catalog"""
+def filter_usno_matches(candidates, det, imgwcs, options=None):
+    """
+    Filter candidates by checking USNO catalog using get_transient_candidates method.
+    
+    Args:
+        candidates: Table of candidate detections
+        det: Detection metadata table
+        imgwcs: WCS for coordinate transformation
+        options: Configuration options (optional)
+            Can include:
+            - enlarge: Factor to enlarge search field
+            - maglim: Magnitude limit
+            - idlimit: Identification radius limit
+            - verbose: Print debug information
+        
+    Returns:
+        Table of filtered candidates
+    """
     if len(candidates) == 0:
         return candidates
 
-    # Get USNO catalog for the field
-    usno_params = {
+    # Handle case where options is None
+    is_verbose = getattr(options, "verbose", False)
+    enlarge_factor = getattr(options, "enlarge", 1.0)
+    mag_limit = getattr(options, "maglim", 20.0)
+    id_limit = getattr(options, "idlimit", det.meta.get("FWHM", 1.2))
+
+    # Set up catalog query parameters
+    cat_params = {
         "ra": det.meta["CTRRA"],
         "dec": det.meta["CTRDEC"],
-        "width": options.enlarge * det.meta["FIELD"]
-        if options.enlarge
-        else det.meta["FIELD"],
-        "height": options.enlarge * det.meta["FIELD"]
-        if options.enlarge
-        else det.meta["FIELD"],
-        "mlim": options.maglim or 20.0,
+        "width": enlarge_factor * det.meta["FIELD"],
+        "height": enlarge_factor * det.meta["FIELD"],
+        "mlim": mag_limit,
     }
 
-    # Get USNO catalog
-    usno = Catalog(catalog="usno", **usno_params)
-    if usno is None or len(usno) == 0:
-        if options.verbose:
-            print("No USNO stars found in the field")
-        return candidates
+    try:
+        # Get USNO catalog
+        usno = Catalog(catalog="usno", **cat_params)
+        if len(usno) == 0:
+            raise ValueError("Could not load USNO catalog")
 
-    if options.verbose:
-        print(f"Got {len(usno)} USNO stars for filtering")
+        if is_verbose:
+            print(f"Got {len(usno)} USNO stars for filtering")
 
-    # Set up matching parameters based on different phases
-    phases = [
-        (
-            "simple",
-            options.maglim or 20.0,
-            options.idlimit or det.meta.get("FWHM", 1.2),
-        ),
-        ("double", (options.maglim or 20.0) - 1, 4),
-        ("bright", (options.maglim or 20.0) - 9, 10),
-    ]
+        # Initialize list for filtered candidates at each phase
+        filtered_candidates = candidates.copy()
 
-    filtered_candidates = candidates.copy()
-    for phase_name, mag_limit, radius in phases:
-        if len(filtered_candidates) < 1:
-            break
+        # Define filtering phases
+        phases = [
+            ("simple", mag_limit, id_limit),
+            ("double", mag_limit - 1, 4),
+            ("bright", mag_limit - 9, 10),
+        ]
 
-        # Filter bright USNO stars for this phase
-        bright_usno = usno[usno["R1mag"] < mag_limit]
-        if len(bright_usno) == 0:
-            if options.verbose:
-                print(f"No USNO stars brighter than {mag_limit} for {phase_name} phase")
-            continue
+        # Apply each filtering phase
+        for phase_name, phase_mag_limit, radius in phases:
+            if len(filtered_candidates) < 1:
+                break
 
-        if options.verbose:
-            print(f"Using {len(bright_usno)} USNO stars for {phase_name} phase")
+            # Filter USNO catalog by magnitude for this phase
+            bright_usno = usno[usno["R1mag"] < phase_mag_limit]
 
-        # Transform USNO coordinates to pixel coordinates
-        try:
-            usno_x, usno_y = imgwcs.all_world2pix(
-                bright_usno["radeg"], bright_usno["decdeg"], 1
+            if len(bright_usno) == 0:
+                if is_verbose:
+                    print(
+                        f"No USNO stars brighter than {phase_mag_limit} for {phase_name} phase"
+                    )
+                continue
+
+            if is_verbose:
+                print(f"Using {len(bright_usno)} USNO stars for {phase_name} phase")
+
+            # Use get_transient_candidates with magnitude-filtered catalog
+            phase_candidates = bright_usno.get_transient_candidates(
+                filtered_candidates, idlimit=radius
             )
-            usno_pixels = np.array([usno_x, usno_y]).transpose()
-        except:
-            if options.verbose:
-                print(f"Failed to convert USNO coordinates for {phase_name} phase")
-            continue
 
-        # Create KD-tree for efficient matching
-        try:
-            tree = KDTree(usno_pixels)
-        except:
-            if options.verbose:
-                print(f"Failed to create KD-tree for {phase_name} phase")
-            continue
+            if is_verbose:
+                n_matched = len(filtered_candidates) - len(phase_candidates)
+                print(f"USNO {phase_name} phase matched {n_matched} candidates")
 
-        # Match candidates against USNO
-        cand_pixels = np.array(
-            [filtered_candidates["X_IMAGE"], filtered_candidates["Y_IMAGE"]]
-        ).transpose()
-        matches = tree.query_radius(cand_pixels, r=radius, return_distance=True)[0]
+            filtered_candidates = phase_candidates
 
-        # Keep only unmatched candidates
-        unmatched_mask = [len(m) == 0 for m in matches]
+        if is_verbose:
+            print(
+                f"USNO filtering: started with {len(candidates)}, ended with {len(filtered_candidates)} candidates"
+            )
 
-        if options.verbose:
-            n_matched = len(unmatched_mask) - sum(unmatched_mask)
-            print(f"USNO {phase_name} phase matched {n_matched} candidates")
+        return filtered_candidates
 
-        filtered_candidates = filtered_candidates[unmatched_mask]
-
-    if options.verbose:
-        print(
-            f"USNO filtering: started with {len(candidates)}, ended with {len(filtered_candidates)} candidates"
-        )
-
-    return filtered_candidates
+    except Exception as e:
+        if is_verbose:
+            print(f"USNO filtering failed: {str(e)}")
+        return candidates
 
 
 def save_region_file(candidates, det, options):
