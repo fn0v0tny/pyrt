@@ -6,6 +6,7 @@ Uses empirical photometry model for accurate SNR calculations.
 
 import numpy as np
 from scipy.optimize import fsolve
+from astropy.table import Table
 
 # Parameters from exposure calculator
 APE = 6.146      # Fitted transition parameter
@@ -75,12 +76,24 @@ def calculate_snr_for_conditions(magnitude, exptime, sky_1s, fwhm, magzero_1s, f
     # Convert target magnitude to magnitude relative to zeropoint
     mag_relative = magnitude - magzero
     
+    # Debug output
+    if magnitude == 18.5:  # Only debug for one case to avoid spam
+        print(f"  Debug SNR calc: mag={magnitude}, exptime={exptime}, transmission={filter_transmission}")
+        print(f"  Debug: effective_exptime={effective_exptime}, effective_magzero_1s={effective_magzero_1s:.2f}")
+        print(f"  Debug: bgsigma={bgsigma:.2f}, magzero={magzero:.2f}, mag_relative={mag_relative:.2f}")
+    
     # Predict magnitude error using empirical model
     predicted_log_magerror = log_magerror(mag_relative, bgsigma, fwhm)
     predicted_magerror = 10**predicted_log_magerror
     
+    if magnitude == 18.5:
+        print(f"  Debug: predicted_log_magerror={predicted_log_magerror:.3f}, predicted_magerror={predicted_magerror:.4f}")
+    
     # Convert to SNR
     snr = magerror_to_snr(predicted_magerror)
+    
+    if magnitude == 18.5:
+        print(f"  Debug: final SNR={snr:.1f}")
     
     return snr
 
@@ -142,7 +155,82 @@ def calculate_required_exptime(magnitude, target_snr, sky_1s, fwhm, magzero_1s,
     except:
         return max_exptime
 
-def determine_grb_strategy(magnitude, time_since_trigger, sky_1s=11.5, fwhm=2.1, magzero_1s=11.28):
+def load_observing_conditions(ecsv_file='image.ecsv'):
+    """
+    Load observing conditions from ECSV file metadata.
+    
+    Parameters:
+    -----------
+    ecsv_file : str
+        Path to the ECSV file containing observing metadata
+        
+    Returns:
+    --------
+    dict : Dictionary containing sky_1s, fwhm, magzero_1s, and exposure time
+    """
+    try:
+        # Read the ECSV file
+        table = Table.read(ecsv_file)
+        
+        # Extract parameters from metadata
+        fwhm = table.meta['FWHM']  # FWHM in pixels
+        bgsigma = table.meta['BGSIGMA']  # Background sigma in counts
+        magzero_raw = table.meta['MAGZERO']  # Raw magnitude zeropoint (reduced by 10)
+        exposure = table.meta['EXPOSURE']  # Exposure time in seconds
+        
+        # Convert to the format needed by our strategy functions
+        # BGSIGMA is the background noise in ADU for this exposure
+        # We need to convert this to sky brightness in ADU/s/pixel
+        
+        # The background noise comes from: bgsigma^2 = sky_rate * exptime + (readnoise/gain)^2
+        # where sky_rate is in ADU/s/pixel and readnoise is in electrons
+        readnoise_adu = RN / GAIN  # Convert readnoise to ADU
+        
+        # Solve for sky_rate: sky_rate = (bgsigma^2 - readnoise_adu^2) / exptime
+        sky_1s = (bgsigma**2 - readnoise_adu**2) / exposure
+        
+        # Ensure sky_1s is positive
+        sky_1s = max(sky_1s, 1.0)
+        
+        # Correct the zeropoint - the +10 correction might be wrong
+        # Let's use the raw value and see if it makes more sense
+        magzero = magzero_raw  # Try using the raw zeropoint first
+        
+        # Convert magzero to 1-second zeropoint
+        magzero_1s = magzero - 2.5*np.log10(exposure)
+        
+        conditions = {
+            'sky_1s': sky_1s,
+            'fwhm': fwhm, 
+            'magzero_1s': magzero_1s,
+            'exposure': exposure,
+            'bgsigma': bgsigma,
+            'magzero': magzero,
+            'magzero_raw': magzero_raw,
+            'readnoise_adu': readnoise_adu
+        }
+        
+        print(f"Debug: bgsigma={bgsigma:.2f} ADU, readnoise_adu={readnoise_adu:.2f} ADU")
+        print(f"Debug: calculated sky_1s={sky_1s:.2f} ADU/s/pixel")
+        
+        return conditions
+        
+    except Exception as e:
+        print(f"Warning: Could not load conditions from {ecsv_file}: {e}")
+        print("Using default values...")
+        return {
+            'sky_1s': 11.5,
+            'fwhm': 2.1,
+            'magzero_1s': 11.28,  # Back to original value
+            'exposure': 120.0,
+            'bgsigma': 46.6,
+            'magzero': 16.48,
+            'magzero_raw': 16.48,
+            'readnoise_adu': RN / GAIN
+        }
+
+def determine_grb_strategy(magnitude, time_since_trigger, ecsv_file='image.ecsv', 
+                          sky_1s=None, fwhm=None, magzero_1s=None):
     """
     Determine optimal GRB observing strategy using proper SNR calculations.
     
@@ -152,17 +240,29 @@ def determine_grb_strategy(magnitude, time_since_trigger, sky_1s=11.5, fwhm=2.1,
         Estimated GRB magnitude
     time_since_trigger : float
         Time since GRB trigger (seconds)
+    ecsv_file : str
+        Path to ECSV file containing observing conditions (optional)
     sky_1s : float
-        Sky brightness (photons/s/pixel)
+        Sky brightness override (photons/s/pixel) - if None, loads from ECSV
     fwhm : float
-        Seeing FWHM (pixels)
+        Seeing FWHM override (pixels) - if None, loads from ECSV
     magzero_1s : float
-        Magnitude zeropoint for 1s exposure
+        Magnitude zeropoint override for 1s exposure - if None, loads from ECSV
         
     Returns:
     --------
     dict : Strategy recommendation with all details
     """
+    
+    # Load observing conditions from ECSV file if not provided
+    if sky_1s is None or fwhm is None or magzero_1s is None:
+        conditions = load_observing_conditions(ecsv_file)
+        if sky_1s is None:
+            sky_1s = conditions['sky_1s']
+        if fwhm is None:
+            fwhm = conditions['fwhm']
+        if magzero_1s is None:
+            magzero_1s = conditions['magzero_1s']
     
     # Define observing configurations
     configs = {
@@ -269,12 +369,21 @@ def test_grb_scenarios():
     
     print("=== GRB Strategy Test ===\n")
     
+    # Load current observing conditions
+    conditions = load_observing_conditions()
+    print(f"Loaded conditions: FWHM={conditions['fwhm']:.2f}px, " + 
+          f"sky_1s={conditions['sky_1s']:.1f} ph/s/px, " +
+          f"magzero_1s={conditions['magzero_1s']:.2f}")
+    print(f"Reference exposure: {conditions['exposure']:.0f}s, " +
+          f"bgsigma={conditions['bgsigma']:.1f}, magzero={conditions['magzero']:.2f} " +
+          f"(raw: {conditions['magzero_raw']:.2f})\n")
+    
     # Test scenarios
     scenarios = [
-        {'mag': 16.0, 'time': 600, 'desc': 'Bright object, 10min after trigger'},
-        {'mag': 18.5, 'time': 300, 'desc': 'Moderate object, 5min after trigger'}, 
-        {'mag': 20.0, 'time': 3600, 'desc': 'Faint object, 1hr after trigger'},
-        {'mag': 22.0, 'time': 1800, 'desc': 'Very faint object, 30min after trigger'},
+        {'mag': 16.0, 'time': 600, 'desc': 'Bright object, 16.0 mag, 10min after trigger'},
+        {'mag': 18.5, 'time': 1200, 'desc': 'Moderate object, 18.5 mag 20min after trigger'}, 
+        {'mag': 20.0, 'time': 3600, 'desc': 'Faint object, 20.0 mag, 1hr after trigger'},
+        {'mag': 22.0, 'time': 7200, 'desc': 'Very faint object, 22.0 mag, 30min after trigger'},
     ]
     
     for scenario in scenarios:
