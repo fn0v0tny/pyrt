@@ -76,24 +76,14 @@ def calculate_snr_for_conditions(magnitude, exptime, sky_1s, fwhm, magzero_1s, f
     # Convert target magnitude to magnitude relative to zeropoint
     mag_relative = magnitude - magzero
     
-    # Debug output
-    if magnitude == 18.5:  # Only debug for one case to avoid spam
-        print(f"  Debug SNR calc: mag={magnitude}, exptime={exptime}, transmission={filter_transmission}")
-        print(f"  Debug: effective_exptime={effective_exptime}, effective_magzero_1s={effective_magzero_1s:.2f}")
-        print(f"  Debug: bgsigma={bgsigma:.2f}, magzero={magzero:.2f}, mag_relative={mag_relative:.2f}")
     
     # Predict magnitude error using empirical model
     predicted_log_magerror = log_magerror(mag_relative, bgsigma, fwhm)
     predicted_magerror = 10**predicted_log_magerror
     
-    if magnitude == 18.5:
-        print(f"  Debug: predicted_log_magerror={predicted_log_magerror:.3f}, predicted_magerror={predicted_magerror:.4f}")
     
     # Convert to SNR
     snr = magerror_to_snr(predicted_magerror)
-    
-    if magnitude == 18.5:
-        print(f"  Debug: final SNR={snr:.1f}")
     
     return snr
 
@@ -144,15 +134,39 @@ def calculate_required_exptime(magnitude, target_snr, sky_1s, fwhm, magzero_1s,
         return predicted_magerror - target_magerror
     
     try:
-        # Try to solve for required exposure time
-        log_exptime_solution = fsolve(equation, np.log10(100))[0]  # Start at 100s
+        # First check if target is achievable at max exposure time
+        max_snr = calculate_snr_for_conditions(magnitude, max_exptime, sky_1s, fwhm, 
+                                              magzero_1s, filter_transmission)
+        if max_snr < target_snr * 0.9:  # Allow 10% tolerance
+            return max_exptime
+        
+        # Try to solve for required exposure time with better initial guess
+        # Start with a reasonable guess based on magnitude
+        if magnitude < 18:
+            initial_guess = 1.0  # Bright objects
+        elif magnitude < 20:
+            initial_guess = 2.0  # Medium objects  
+        else:
+            initial_guess = 2.5  # Faint objects
+            
+        # Use a more robust solver with better tolerances
+        from scipy.optimize import fsolve
+        import warnings
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # Suppress convergence warnings
+            log_exptime_solution = fsolve(equation, initial_guess, 
+                                        xtol=1e-4, maxfev=100)[0]
+        
         exptime = 10**log_exptime_solution
         
         # Check if solution is reasonable
         if exptime > max_exptime or exptime < 1:
             return max_exptime
         return exptime
+        
     except:
+        # If solver fails completely, use max exposure time
         return max_exptime
 
 def load_observing_conditions(ecsv_file='image.ecsv'):
@@ -210,8 +224,6 @@ def load_observing_conditions(ecsv_file='image.ecsv'):
             'readnoise_adu': readnoise_adu
         }
         
-        print(f"Debug: bgsigma={bgsigma:.2f} ADU, readnoise_adu={readnoise_adu:.2f} ADU")
-        print(f"Debug: calculated sky_1s={sky_1s:.2f} ADU/s/pixel")
         
         return conditions
         
@@ -380,10 +392,10 @@ def test_grb_scenarios():
     
     # Test scenarios
     scenarios = [
-        {'mag': 16.0, 'time': 600, 'desc': 'Bright object, 16.0 mag, 10min after trigger'},
-        {'mag': 18.5, 'time': 1200, 'desc': 'Moderate object, 18.5 mag 20min after trigger'}, 
-        {'mag': 20.0, 'time': 3600, 'desc': 'Faint object, 20.0 mag, 1hr after trigger'},
-        {'mag': 22.0, 'time': 7200, 'desc': 'Very faint object, 22.0 mag, 30min after trigger'},
+        {'mag': 16.0, 'time': 600, 'desc': 'Bright object, 10min after trigger'},
+        {'mag': 18.5, 'time': 300, 'desc': 'Moderate object, 5min after trigger'}, 
+        {'mag': 20.0, 'time': 3600, 'desc': 'Faint object, 1hr after trigger'},
+        {'mag': 22.0, 'time': 1800, 'desc': 'Very faint object, 30min after trigger'},
     ]
     
     for scenario in scenarios:
