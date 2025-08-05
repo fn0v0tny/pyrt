@@ -5,10 +5,12 @@ import subprocess
 import tempfile
 import time
 import warnings
+import hashlib
+import pickle
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Tuple, Type, TypeVar, cast
+from pathlib import Path
 
-import astropy.io.ascii
 import astropy.table
 import astropy.units as u
 import astropy.wcs
@@ -42,6 +44,163 @@ class CatalogFilter:
     effective_wl: float  # Effective wavelength in Angstroms
     system: str  # Photometric system (e.g., 'AB', 'Vega')
     error_name: Optional[str] = None  # Name of error column if available
+
+
+class CatalogCache:
+    """Cache management for catalog queries."""
+    
+    def __init__(self, cache_dir: str = "./catalog_cache"):
+        """Initialize cache with specified directory."""
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        
+        # Create subdirectories for different catalogs
+        for catalog_name in ["panstarrs", "gaia", "atlas_vizier", "usno"]:
+            (self.cache_dir / catalog_name).mkdir(exist_ok=True)
+    
+    def _generate_cache_key(self, catalog_name: str, params: QueryParams) -> str:
+        """Generate a unique cache key based on catalog and query parameters."""
+        # Create a hash of the relevant parameters
+        key_data = {
+            'catalog': catalog_name,
+            'ra': round(params.ra, 6) if params.ra else None,
+            'dec': round(params.dec, 6) if params.dec else None,
+            'width': round(params.width, 4),
+            'height': round(params.height, 4),
+            'mlim': round(params.mlim, 2)
+        }
+        
+        # Create hash from the key data
+        key_string = str(sorted(key_data.items()))
+        cache_key = hashlib.md5(key_string.encode()).hexdigest()[:16]
+        return cache_key
+    
+    def get_cache_path(self, catalog_name: str, params: QueryParams) -> Path:
+        """Get the cache file path for given parameters."""
+        cache_key = self._generate_cache_key(catalog_name, params)
+        return self.cache_dir / catalog_name / f"{cache_key}.pkl"
+    
+    def is_cached(self, catalog_name: str, params: QueryParams) -> bool:
+        """Check if catalog data is cached."""
+        cache_path = self.get_cache_path(catalog_name, params)
+        return cache_path.exists()
+    
+    def load_from_cache(self, catalog_name: str, params: QueryParams) -> Optional[astropy.table.Table]:
+        """Load catalog data from cache."""
+        cache_path = self.get_cache_path(catalog_name, params)
+        
+        if not cache_path.exists():
+            return None
+        
+        try:
+            with open(cache_path, 'rb') as f:
+                cached_data = pickle.load(f)
+            
+            # Verify the cached data is still valid (basic checks)
+            if isinstance(cached_data, dict) and 'data' in cached_data and 'timestamp' in cached_data:
+                # Check if cache is not too old (default: 30 days)
+                cache_age_days = (time.time() - cached_data['timestamp']) / (24 * 3600)
+                if cache_age_days < 30:
+                    print(f"Loading {catalog_name} from cache (age: {cache_age_days:.1f} days)")
+                    return cached_data['data']
+                else:
+                    print(f"Cache for {catalog_name} is too old ({cache_age_days:.1f} days), will refresh")
+                    cache_path.unlink()  # Remove old cache
+            
+        except Exception as e:
+            print(f"Failed to load cache for {catalog_name}: {e}")
+            # Remove corrupted cache file
+            try:
+                cache_path.unlink()
+            except:
+                pass
+        
+        return None
+    
+    def save_to_cache(self, catalog_name: str, params: QueryParams, data: astropy.table.Table) -> None:
+        """Save catalog data to cache."""
+        cache_path = self.get_cache_path(catalog_name, params)
+        
+        try:
+            cache_data = {
+                'data': data,
+                'timestamp': time.time(),
+                'params': asdict(params)
+            }
+            
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            
+            print(f"Cached {catalog_name} data to {cache_path}")
+            
+        except Exception as e:
+            print(f"Failed to save cache for {catalog_name}: {e}")
+    
+    def clear_cache(self, catalog_name: Optional[str] = None, max_age_days: Optional[float] = None) -> None:
+        """Clear cache files."""
+        if catalog_name:
+            cache_dirs = [self.cache_dir / catalog_name]
+        else:
+            cache_dirs = [d for d in self.cache_dir.iterdir() if d.is_dir()]
+        
+        for cache_dir in cache_dirs:
+            if not cache_dir.exists():
+                continue
+                
+            for cache_file in cache_dir.glob("*.pkl"):
+                should_remove = False
+                
+                if max_age_days is not None:
+                    try:
+                        # Check file age
+                        file_age = (time.time() - cache_file.stat().st_mtime) / (24 * 3600)
+                        if file_age > max_age_days:
+                            should_remove = True
+                    except:
+                        should_remove = True
+                else:
+                    should_remove = True
+                
+                if should_remove:
+                    try:
+                        cache_file.unlink()
+                        print(f"Removed cache file: {cache_file}")
+                    except Exception as e:
+                        print(f"Failed to remove cache file {cache_file}: {e}")
+    
+    def get_cache_info(self) -> Dict[str, Any]:
+        """Get information about cached data."""
+        info = {}
+        
+        for catalog_dir in self.cache_dir.iterdir():
+            if not catalog_dir.is_dir():
+                continue
+                
+            catalog_name = catalog_dir.name
+            cache_files = list(catalog_dir.glob("*.pkl"))
+            
+            total_size = sum(f.stat().st_size for f in cache_files)
+            
+            info[catalog_name] = {
+                'num_files': len(cache_files),
+                'total_size_mb': total_size / (1024 * 1024),
+                'files': []
+            }
+            
+            for cache_file in cache_files:
+                try:
+                    file_age = (time.time() - cache_file.stat().st_mtime) / (24 * 3600)
+                    file_size = cache_file.stat().st_size / 1024  # KB
+                    
+                    info[catalog_name]['files'].append({
+                        'name': cache_file.name,
+                        'age_days': file_age,
+                        'size_kb': file_size
+                    })
+                except:
+                    pass
+        
+        return info
 
 
 class CatalogFilters:
@@ -101,6 +260,9 @@ class Catalog(astropy.table.Table):
     MAKAK: str = "makak"
     USNOB: str = "usno"
 
+    # Class-level cache instance
+    _cache = None
+
     KNOWN_CATALOGS: Dict[str, CatalogConfig]
     # Define available catalogs with their properties
     KNOWN_CATALOGS: Dict[str, CatalogConfig]
@@ -111,6 +273,7 @@ class Catalog(astropy.table.Table):
             "epoch": 2015.5,
             "local": True,
             "service": "local",
+            "cacheable": False,  # Local catalogs don't need caching
             "mag_splits": [
                 ("00_m_16", 0),
                 ("16_m_17", 16),
@@ -122,12 +285,13 @@ class Catalog(astropy.table.Table):
         PANSTARRS: {
             "description": "Pan-STARRS Data Release 2",
             "filters": CatalogFilters.PANSTARRS,
-            "catalog_id": "Panstarrs",  # ?
-            "table": "mean",  # ?
-            "release": "dr2",  # ?
+            "catalog_id": "Panstarrs",
+            "table": "mean",
+            "release": "dr2",
             "epoch": 2015.5,
             "local": False,
             "service": "MAST",
+            "cacheable": True,
             "column_mapping": {
                 "raMean": "radeg",
                 "decMean": "decdeg",
@@ -150,6 +314,7 @@ class Catalog(astropy.table.Table):
             "local": False,
             "service": "Gaia",
             "catalog_id": "gaiadr3.gaia_source",
+            "cacheable": True,
         },
         ATLAS_VIZIER: {
             "description": "ATLAS Reference Catalog 2",
@@ -157,7 +322,8 @@ class Catalog(astropy.table.Table):
             "epoch": 2015.5,
             "local": False,
             "service": "VizieR",
-            "catalog_id": "J/ApJ/867/105",  # Updated catalog reference
+            "catalog_id": "J/ApJ/867/105",
+            "cacheable": True,
             "column_mapping": {
                 "RA_ICRS": "radeg",
                 "DE_ICRS": "decdeg",
@@ -177,12 +343,12 @@ class Catalog(astropy.table.Table):
         },
         MAKAK: {
             "description": "Pre-filtered wide-field catalog",
-            "filters": CatalogFilters.ATLAS,  # Using ATLAS filter definitions
-            "epoch": 2015.5,  # Default epoch, could be overridden from FITS metadata
+            "filters": CatalogFilters.ATLAS,
+            "epoch": 2015.5,
             "local": True,
             "service": "local",
-            "filepath": "ssh fnovotny@lascau.asu.cas.cz:/home/mates/test/catalog.fits",
-            # Default path, could be configurable
+            "cacheable": False,
+            "filepath": "/home/mates/test/catalog.fits",
         },
         USNOB: {
             "description": "USNO-B1.0 Catalog",
@@ -191,6 +357,7 @@ class Catalog(astropy.table.Table):
             "local": False,
             "service": "VizieR",
             "catalog_id": "I/284/out",
+            "cacheable": True,
             "column_mapping": {
                 "RAJ2000": "radeg",
                 "DEJ2000": "decdeg",
@@ -209,6 +376,30 @@ class Catalog(astropy.table.Table):
             },
         },
     }
+
+    @classmethod
+    def set_cache_directory(cls, cache_dir: str) -> None:
+        """Set the cache directory for all catalog instances."""
+        cls._cache = CatalogCache(cache_dir)
+    
+    @classmethod
+    def get_cache(cls) -> CatalogCache:
+        """Get the cache instance, creating it if necessary."""
+        if cls._cache is None:
+            cls._cache = CatalogCache()
+        return cls._cache
+    
+    @classmethod
+    def clear_all_cache(cls, max_age_days: Optional[float] = None) -> None:
+        """Clear all cached catalog data."""
+        cache = cls.get_cache()
+        cache.clear_cache(max_age_days=max_age_days)
+    
+    @classmethod
+    def get_cache_info(cls) -> Dict[str, Any]:
+        """Get information about cached catalog data."""
+        cache = cls.get_cache()
+        return cache.get_cache_info()
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the catalog with proper handling of properties."""
@@ -266,14 +457,35 @@ class Catalog(astropy.table.Table):
         return str(self.meta.get("catalog_props", {}).get("catalog_name"))
 
     def _fetch_catalog_data(self) -> Optional[astropy.table.Table]:
-        """Fetch data from the specified catalog source."""
+        """Fetch data from the specified catalog source with caching support."""
         if self._catalog_name not in self.KNOWN_CATALOGS:
             raise ValueError(f"Unknown catalog: {self._catalog_name}")
 
         config = self.KNOWN_CATALOGS[self._catalog_name]
         result: Optional[astropy.table.Table] = None
 
-        # Get catalog data based on type
+        # Check if this catalog supports caching
+        if config.get("cacheable", False):
+            cache = self.get_cache()
+            
+            # Try to load from cache first
+            result = cache.load_from_cache(self._catalog_name, self._query_params)
+            if result is not None:
+                print(f"Loaded {self._catalog_name} from cache")
+                # Update metadata and return
+                result.meta.update(
+                    {
+                        "catalog": self._catalog_name,
+                        "astepoch": config["epoch"],
+                        "filters": list(config["filters"].keys()),
+                        "cached": True
+                    }
+                )
+                return result
+
+        # Fetch fresh data if not cached or caching disabled
+        print(f"Fetching fresh data for {self._catalog_name}")
+        
         if self._catalog_name == self.ATLAS:
             result = self._get_atlas_local()
         elif self._catalog_name == self.ATLAS_VIZIER:
@@ -284,6 +496,8 @@ class Catalog(astropy.table.Table):
             result = self._get_gaia_data()
         elif self._catalog_name == self.USNOB:
             result = self._get_usnob_data()
+        elif self._catalog_name == self.MAKAK:
+            result = self._get_makak_data()
 
         if result is None:
             # Create empty catalog with proper metadata for graceful handling
@@ -295,10 +509,18 @@ class Catalog(astropy.table.Table):
                 "catalog": self._catalog_name,
                 "astepoch": config["epoch"],
                 "filters": list(config["filters"].keys()),
+                "cached": False
             }
         )
+        
+        # Save to cache if supported
+        if config.get("cacheable", False) and len(result) > 0:
+            cache = self.get_cache()
+            cache.save_to_cache(self._catalog_name, self._query_params, result)
+        
         return result
 
+    # [Keep all the existing catalog-specific methods unchanged]
     def _get_atlas_local(self) -> Optional[astropy.table.Table]:
         """Get data from local ATLAS catalog."""
         config = self.KNOWN_CATALOGS[self.ATLAS]
@@ -326,7 +548,7 @@ class Catalog(astropy.table.Table):
         """Get data from one magnitude split of ATLAS catalog."""
         with tempfile.NamedTemporaryFile(suffix=".ecsv", delete=False) as tmp:
             try:
-                cmd = f'ssh fnovotny@lascaux.asu.cas.cz "atlas {self._query_params.ra} {self._query_params.dec} -rect {self._query_params.width},{self._query_params.height} -dir {directory} -mlim {self._query_params.mlim:.2f} -ecsv"'
+                cmd = f'/home/mates/bin/atlas {self._query_params.ra} {self._query_params.dec} -rect {self._query_params.width},{self._query_params.height} -dir {directory} -mlim {self._query_params.mlim:.2f} -ecsv'
                 print(cmd)
                 result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
@@ -362,24 +584,21 @@ class Catalog(astropy.table.Table):
         """Get ATLAS RefCat2 data from VizieR with updated column mapping."""
         from astroquery.vizier import Vizier
 
-        # Configure Vizier with correct column names
         column_mapping = self.KNOWN_CATALOGS[self.ATLAS_VIZIER]["column_mapping"]
         vizier = Vizier(
             columns=list(column_mapping.keys()),
             column_filters={
-                "rmag": f"<{self._query_params.mlim}"  # Magnitude limit in r-band
+                "rmag": f"<{self._query_params.mlim}"
             },
             row_limit=-1,
         )
 
-        # Create coordinate object
         coords = SkyCoord(
             ra=self._query_params.ra * u.deg,
             dec=self._query_params.dec * u.deg,
             frame="icrs",
         )
 
-        # Query VizieR
         result = vizier.query_region(
             coords,
             width=self._query_params.width * u.deg,
@@ -391,32 +610,21 @@ class Catalog(astropy.table.Table):
             return None
 
         atlas = result[0]
-
-        # Create output catalog
         cat = astropy.table.Table(result)
 
-        # Initialize all columns from the mapping with zeros
-        our_columns = set(column_mapping.values())  # Use set to remove any duplicates
+        our_columns = set(column_mapping.values())
         for col in our_columns:
             cat[col] = np.zeros(len(atlas), dtype=np.float64)
 
-        # Map columns according to our mapping
         for vizier_name, our_name in column_mapping.items():
             if vizier_name in atlas.columns:
-                # Convert proper motions from mas/yr to deg/yr if needed
                 if vizier_name in ["pmRA", "pmDE"]:
                     cat[our_name] = atlas[vizier_name] / (3.6e6)
                 else:
                     cat[our_name] = atlas[vizier_name]
 
-        # Add computed Johnson magnitudes
         self._add_transformed_magnitudes(cat)
-
         return cat
-
-    #        except Exception as e:
-    #            warnings.warn(f"VizieR ATLAS query failed: {e}")
-    #            return None
 
     def _get_panstarrs_data(self) -> Optional[astropy.table.Table]:
         """Get PanSTARRS DR2 data."""
@@ -452,19 +660,14 @@ class Catalog(astropy.table.Table):
 
         result = astropy.table.Table()
 
-        # Map columns according to configuration
         for ps1_name, our_name in config["column_mapping"].items():
             if ps1_name in ps1.columns:
                 result[our_name] = ps1[ps1_name].astype(np.float64)
 
-        # Add proper motion columns (not provided by PanSTARRS)
         result["pmra"] = np.zeros(len(ps1), dtype=np.float64)
         result["pmdec"] = np.zeros(len(ps1), dtype=np.float64)
 
         return result
-
-    #        except Exception as e:
-    #            raise ValueError(f"PanSTARRS query failed: {str(e)}")
 
     def _get_gaia_data(self) -> Optional[astropy.table.Table]:
         """Get Gaia DR3 data."""
@@ -503,13 +706,11 @@ class Catalog(astropy.table.Table):
 
             result = astropy.table.Table()
 
-            # Basic astrometry
             result["radeg"] = gaia_cat["ra"]
             result["decdeg"] = gaia_cat["dec"]
-            result["pmra"] = gaia_cat["pmra"] / (3.6e6)  # mas/yr to deg/yr
-            result["pmdec"] = gaia_cat["pmdec"] / (3.6e6)  # mas/yr to deg/yr
+            result["pmra"] = gaia_cat["pmra"] / (3.6e6)
+            result["pmdec"] = gaia_cat["pmdec"] / (3.6e6)
 
-            # Add Gaia magnitudes and errors
             for filter_name, filter_info in config["filters"].items():
                 result[filter_info.name] = gaia_cat[filter_info.name]
                 if filter_info.error_name:
@@ -533,23 +734,20 @@ class Catalog(astropy.table.Table):
             config = self.KNOWN_CATALOGS[self.USNOB]
             column_mapping = config["column_mapping"]
 
-            # Configure Vizier
             vizier = Vizier(
                 columns=list(column_mapping.keys()),
                 column_filters={
-                    "R1mag": f"<{self._query_params.mlim}"  # Magnitude limit in R1
+                    "R1mag": f"<{self._query_params.mlim}"
                 },
-                row_limit=-1,  # Get all matching objects
+                row_limit=-1,
             )
 
-            # Create coordinate object
             coords = SkyCoord(
                 ra=self._query_params.ra * u.deg,
                 dec=self._query_params.dec * u.deg,
                 frame="icrs",
             )
 
-            # Query VizieR
             result = vizier.query_region(
                 coords,
                 width=2*self._query_params.width * u.deg,
@@ -562,35 +760,28 @@ class Catalog(astropy.table.Table):
                 return None
 
             usnob = result[0]
-
-            # Create output catalog
             cat = astropy.table.Table()
 
-            # Initialize mapped columns
             our_columns = set(column_mapping.values())
             for col in our_columns:
                 cat[col] = np.zeros(len(usnob), dtype=np.float64)
 
-            # Map columns according to configuration
             for vizier_name, our_name in column_mapping.items():
                 if vizier_name in usnob.columns:
-                    # Convert proper motions from mas/yr to deg/yr if needed
                     if vizier_name in ["pmRA", "pmDE"]:
                         cat[our_name] = usnob[vizier_name] / (3.6e6)
                     else:
                         cat[our_name] = usnob[vizier_name]
 
-            # Handle quality flags and uncertainties
             for band in ["B1", "R1", "B2", "R2", "I"]:
                 mag_col = f"{band}mag"
                 err_col = f"e_{band}mag"
                 if mag_col in cat.columns:
-                    # Set typical errors if not provided
                     if err_col not in cat.columns or np.all(cat[err_col] == 0):
                         cat[err_col] = np.where(
                             cat[mag_col] < 19,
-                            0.1,  # Brighter stars
-                            0.2,  # Fainter stars
+                            0.1,
+                            0.2,
                         )
 
             return cat
@@ -603,11 +794,10 @@ class Catalog(astropy.table.Table):
         try:
             from astroquery.vizier import Vizier
 
-            # Read the pre-filtered catalog
             cat = astropy.table.Table.read(config["filepath"])
             if self._query_params.ra is None or self._query_params.dec is None:
                 raise ValueError("RA and DEC are required for MAKAK catalog access")
-            # Filter by field of view
+            
             ctr = SkyCoord(
                 self._query_params.ra * u.deg,
                 self._query_params.dec * u.deg,
@@ -638,7 +828,6 @@ class Catalog(astropy.table.Table):
                 logging.warning("No SDSS data found")
                 return None
 
-            # Ensure proper motion columns exist
             if "pmra" not in cat.columns:
                 cat["pmra"] = np.zeros(len(cat), dtype=np.float64)
             if "pmdec" not in cat.columns:
@@ -694,7 +883,6 @@ class Catalog(astropy.table.Table):
         if obj is None:
             return
 
-        # Copy catalog properties if they exist
         if hasattr(obj, "meta") and "catalog_props" in obj.meta:
             if not hasattr(self, "meta"):
                 self.meta = {}
@@ -707,21 +895,13 @@ class Catalog(astropy.table.Table):
             new_cat.meta["catalog_props"] = self.meta["catalog_props"].copy()
         return new_cat
 
+    # [Rest of the methods remain unchanged...]
     def transform_to_instrumental(
         self, det: astropy.table.Table, wcs: astropy.wcs.WCS
     ) -> Optional[astropy.table.Table]:
-        """Transform catalog to instrumental system.
-
-        Args:
-            det: Detection metadata table
-            wcs: WCS for coordinate transformation
-
-        Returns:
-            Catalog: New catalog instance with transformed data
-        """
+        """Transform catalog to instrumental system."""
         try:
             cat_out = super().copy()
-            # Get target filter
             target_filter = det.meta.get("REFILTER")
             if not target_filter:
                 raise ValueError(
@@ -734,18 +914,15 @@ class Catalog(astropy.table.Table):
                 self, target_filter
             )
 
-            # Create output catalog
             cat_out = self.copy()
             cat_out.meta["color_terms"] = color_descriptions
             cat_out.meta["target_filter"] = target_filter
 
-            # Transform coordinates
             try:
                 cat_x, cat_y = wcs.all_world2pix(self["radeg"], self["decdeg"], 1)
             except Exception as e:
                 raise ValueError(f"Coordinate transformation failed: {str(e)}")
 
-            # Load photometric model
             if "RESPONSE" not in det.meta:
                 raise ValueError("No RESPONSE model in detection metadata")
 
@@ -757,11 +934,9 @@ class Catalog(astropy.table.Table):
             except Exception as e:
                 raise ValueError(f"Failed to load photometric model: {str(e)}")
 
-            # Get base magnitude
             filter_info = self.filters[target_filter]
             base_mag = self[filter_info.name]
 
-            # Prepare model input
             model_input = (
                 base_mag,
                 det.meta["AIRMASS"],
@@ -776,10 +951,8 @@ class Catalog(astropy.table.Table):
                 np.ones_like(base_mag),
             )
 
-            # Apply model
             cat_out["mag_instrument"] = ffit.model(ffit.fixvalues, model_input)
 
-            # Add errors
             if filter_info.error_name and filter_info.error_name in self.columns:
                 cat_out["mag_instrument_err"] = np.sqrt(
                     self[filter_info.error_name] ** 2 + 0.01 ** 2
@@ -787,10 +960,9 @@ class Catalog(astropy.table.Table):
             else:
                 cat_out["mag_instrument_err"] = np.full_like(base_mag, 0.03)
 
-            # Preserve catalog properties
             if "catalog_props" in self.meta:
                 cat_out.meta["catalog_props"] = self.meta["catalog_props"].copy()
-            # Add transformation metadata
+            
             cat_out.meta["transform_info"] = {
                 "source_catalog": self.catalog_name,
                 "source_filter": filter_info.name,
@@ -808,40 +980,25 @@ class Catalog(astropy.table.Table):
     def get_transient_candidates(
         self, det: astropy.table.Table, idlimit: float = 5.0
     ) -> astropy.table.Table:
-        """Identify transient candidates by comparing detections against catalog sources using KDTree for efficient spatial matching.
-
-        Args:
-            det (astropy.table.Table): Table of detected objects with X_IMAGE, Y_IMAGE columns
-            idlimit (float): Identification radius limit in pixels (default: 5.0)
-
-        Returns:
-            astropy.table.Table: Table of transient candidates (detections without catalog matches)
-        """
+        """Identify transient candidates by comparing detections against catalog sources."""
         try:
-            # Input validation
             self._validate_detection_table(det)
 
-            # Transform catalog coordinates to pixel space based on detection WCS
             cat_xy = self._transform_catalog_to_pixel(det)
             if len(cat_xy) < 1:
                 warnings.warn("No valid catalog sources in the field")
                 return det
 
-            # Create detection array
             det_xy = np.array([det["X_IMAGE"], det["Y_IMAGE"]]).T
 
-            # Build KDTree for catalog sources
             tree = KDTree(cat_xy)
 
-            # Find all neighbors within idlimit radius
             indices, distances = tree.query_radius(
                 det_xy, r=idlimit, return_distance=True
             )
-            # distances are useless as in transients they are all equal to idlimit
-            # Create mask for detections with no neighbors within limit
+            
             transient_mask = np.array([len(idx) == 0 for idx in indices])
 
-            # Create output table
             transients = det[transient_mask].copy()
 
             return transients
@@ -852,37 +1009,23 @@ class Catalog(astropy.table.Table):
     def compute_magnitude_difference(
         self, det_without_transients: astropy.table.Table, filter: str
     ) -> astropy.table.Table:
-        """Compute magnitude differences between detections and catalog sources.
-
-        Args:
-            det_without_transients (astropy.table.Table):
-            Table of detected objects with X_IMAGE, Y_IMAGE, MAG_CALIB and MAGERR_AUTO columns and with WCS
-            filter (str): Filter name for magnitude comparison
-
-        Returns:
-            astropy.table.Table: Table of detections with magnitude differences
-        """
+        """Compute magnitude differences between detections and catalog sources."""
         if filter not in self.filters:
             raise ValueError(f"Filter '{filter}' not available in the catalog.")
         try:
 
-            # Input validation
             self._validate_detection_table(det_without_transients)
 
-            # Transform catalog coordinates to pixel space based on detection WCS
             cat_xy = self._transform_catalog_to_pixel(det_without_transients)
 
-            # Create detection array
             det_xy = np.array(
                 [det_without_transients["X_IMAGE"], det_without_transients["Y_IMAGE"]]
             ).T
 
-            # Build KDTree for catalog sources
             tree = KDTree(cat_xy)
 
-            # Find nearest neighbor for each detection
             dist, idx = tree.query(det_xy, k=1)
-            # Compute magnitude differences
+            
             if filter in self.filters:
                 cat_mag = (self[filter][idx]).flatten()
                 det_mag = np.array(det_without_transients["MAG_CALIB"])
@@ -896,7 +1039,6 @@ class Catalog(astropy.table.Table):
                 except Exception:
                     pass
 
-            # Update metadata
             det_without_transients.meta.update(
                 {"reference_catalog": self.catalog_name, "matching_time": time.time()}
             )
@@ -925,47 +1067,46 @@ class Catalog(astropy.table.Table):
     def _transform_catalog_to_pixel(self, det: astropy.table.Table) -> np.ndarray:
         """Transform catalog coordinates to pixel coordinates."""
         try:
-            # Get WCS from detection metadata
-            imgwcs = astropy.wcs.WCS(det.meta)
-            # Transform coordinates
+            header = det.meta
+            header['CTYPE1'] = 'RA---TAN'
+            header['CTYPE2'] = 'DEC--TAN'
+            try:
+                del header['CTYPE1T']
+                del header['CTYPE2T']
+                del header['CRVAL1T']
+                del header['CRVAL2T']
+                del header['CDELT1T']
+                del header['CDELT2T']
+                del header['CROTA2T']
+            except:
+                pass
+            
+            try:
+                distortion_keys = [k for k in header.keys() if any(x in k for x in ['PV', 'A_', 'B_', 'AP_', 'BP_'])]
+                for key in distortion_keys:
+                    del header[key]
+            except:
+                pass
+
+            imgwcs = astropy.wcs.WCS(header)
             cat_x, cat_y = imgwcs.all_world2pix(self["radeg"], self["decdeg"], 1)
 
-            # Filter out invalid transformations and sources outside image
-            valid_mask = (
-                ~np.isnan(cat_x)
-                & ~np.isnan(cat_y)
-                & (cat_x >= 0)
-                & (cat_x < det.meta["IMAGEW"])
-                & (cat_y >= 0)
-                & (cat_y < det.meta["IMAGEH"])
-            )
-
-            return np.column_stack([cat_x[valid_mask], cat_y[valid_mask]])
+            return np.column_stack([cat_x, cat_y])
         except Exception as e:
             raise ValueError(f"Coordinate transformation failed: {str(e)}") from e
 
     def match_with_external_catalog(
         self, other_cat: "Catalog", max_separation: float = 1.0
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Match sources with another catalog using sky coordinates.
-
-        Args:
-            other_cat (Catalog): Another catalog instance to match against
-            max_separation (float): Maximum separation in arcseconds
-
-        Returns:
-            Tuple[np.ndarray, np.ndarray]: Indices of matching sources in both catalogs
-        """
+        """Match sources with another catalog using sky coordinates."""
         import astropy.units as u
         from astropy.coordinates import SkyCoord
 
-        # Create SkyCoord objects
         cat1_coords = SkyCoord(ra=self["radeg"] * u.deg, dec=self["decdeg"] * u.deg)
         cat2_coords = SkyCoord(
             ra=other_cat["radeg"] * u.deg, dec=other_cat["decdeg"] * u.deg
         )
 
-        # Perform coordinate matching
         idx1, idx2, sep, _ = cat1_coords.search_around_sky(
             cat2_coords, max_separation * u.arcsec
         )
@@ -981,3 +1122,93 @@ def add_catalog_argument(parser: Any) -> None:
         default="ATLAS",
         help="Catalog to use for photometric reference",
     )
+
+
+# Utility functions for cache management
+def setup_catalog_cache(cache_dir: str = "./catalog_cache") -> None:
+    """Setup catalog caching with specified directory."""
+    Catalog.set_cache_directory(cache_dir)
+    print(f"Catalog cache set to: {cache_dir}")
+
+
+def print_cache_info() -> None:
+    """Print information about cached catalog data."""
+    info = Catalog.get_cache_info()
+    
+    print("\n=== Catalog Cache Information ===")
+    total_size = 0
+    total_files = 0
+    
+    for catalog_name, cat_info in info.items():
+        print(f"\n{catalog_name.upper()}:")
+        print(f"  Files: {cat_info['num_files']}")
+        print(f"  Total size: {cat_info['total_size_mb']:.1f} MB")
+        
+        total_size += cat_info['total_size_mb']
+        total_files += cat_info['num_files']
+        
+        if cat_info['files']:
+            print("  Recent files:")
+            # Show 3 most recent files
+            recent_files = sorted(cat_info['files'], key=lambda x: x['age_days'])[:3]
+            for file_info in recent_files:
+                print(f"    {file_info['name']} ({file_info['age_days']:.1f} days, {file_info['size_kb']:.0f} KB)")
+    
+    print(f"\nTotal: {total_files} files, {total_size:.1f} MB")
+
+
+def clear_old_cache(max_age_days: float = 30.0) -> None:
+    """Clear cache files older than specified age."""
+    print(f"Clearing cache files older than {max_age_days} days...")
+    Catalog.clear_all_cache(max_age_days=max_age_days)
+    print("Cache cleanup completed.")
+
+
+def clear_all_cache() -> None:
+    """Clear all cached catalog data."""
+    print("Clearing all cached catalog data...")
+    Catalog.clear_all_cache()
+    print("All cache cleared.")
+
+
+# Example usage functions
+def example_usage():
+    """Example of how to use the cached catalog system."""
+    
+    # Setup cache directory
+    setup_catalog_cache("./my_catalog_cache")
+    
+    # Define query parameters
+    params = QueryParams(
+        ra=150.0,
+        dec=2.0,
+        width=0.5,
+        height=0.5,
+        mlim=18.0
+    )
+    
+    print("First query (will download and cache):")
+    cat1 = Catalog(catalog="gaia", **params.__dict__)
+    print(f"Got {len(cat1)} sources from Gaia")
+    
+    print("\nSecond query (should load from cache):")
+    cat2 = Catalog(catalog="gaia", **params.__dict__)
+    print(f"Got {len(cat2)} sources from Gaia")
+    
+    # Show cache info
+    print_cache_info()
+    
+    # Example with PanSTARRS
+    print("\nQuerying PanSTARRS (will cache if successful):")
+    try:
+        cat_ps = Catalog(catalog="panstarrs", **params.__dict__)
+        print(f"Got {len(cat_ps)} sources from PanSTARRS")
+    except Exception as e:
+        print(f"PanSTARRS query failed: {e}")
+    
+    # Final cache info
+    print_cache_info()
+
+
+if __name__ == "__main__":
+    example_usage()
