@@ -16,6 +16,7 @@ from sklearn.neighbors import KDTree
 from typing import List, Dict, Optional
 
 from catalog import Catalog, QueryParams
+from cattransient import CatTransients
 from dataclasses import dataclass
 from collections import defaultdict
 
@@ -486,7 +487,7 @@ class OptimizedTransientAnalyzer:
                     # Fallback to standard detection
                     if params is None:
                         params = QueryParams()
-                    catalog = Catalog(catalog=cat_name, **params.__dict__)
+                    catalog = CatTransients(catalog=cat_name, **params.__dict__)
                     
                     # Standard detection can handle various magnitude columns more flexibly
                     candidates = catalog.get_transient_candidates(detections, idlimit)
@@ -633,7 +634,7 @@ class OptimizedTransientAnalyzer:
             params = QueryParams()
         
         self.logger.info(f"Loading catalog: {cat_name}")
-        catalog = Catalog(catalog=cat_name, **params.__dict__)
+        catalog = CatTransients(catalog=cat_name, **params.__dict__)
         
         # Try to enable optimizations
         try:
