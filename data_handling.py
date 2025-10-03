@@ -1,10 +1,8 @@
-import logging
-
-import astropy.units as u
 import numpy as np
-from astropy.coordinates import AltAz, EarthLocation, SkyCoord
+import logging
 from astropy.time import Time
-
+from astropy.coordinates import SkyCoord, AltAz, EarthLocation
+import astropy.units as u
 
 class PhotometryData:
     """
@@ -47,30 +45,28 @@ class PhotometryData:
         self._current_mask = None
         self._filter_columns = []
         self._current_filter = None
-        self._required_columns = ["y", "adif", "coord_x", "coord_y", "img", "dy"]
+        self._required_columns = ['y', 'adif', 'coord_x', 'coord_y', 'img', 'dy']
         self._image_counts = {}
         self._total_objects = 0
 
     def init_column(self, name):
-        if name not in self._data and name != "x":
+        if name not in self._data and name != 'x':
             self._data[name] = []
 
     def append(self, **kwargs):
         for name, value in kwargs.items():
-            if name != "x":
+            if name != 'x':
                 self.init_column(name)
                 self._data[name].append(value)
 
     def extend(self, **kwargs):
         for name, value in kwargs.items():
-            if name != "x":
+            if name != 'x':
                 self.init_column(name)
                 self._data[name].extend(value)
-                if name == "img":
+                if name == 'img':
                     for img_no in value:
-                        self._image_counts[img_no] = (
-                            self._image_counts.get(img_no, 0) + 1
-                        )
+                        self._image_counts[img_no] = self._image_counts.get(img_no, 0) + 1
 
     def set_meta(self, key, value):
         self._meta[key] = value
@@ -82,9 +78,17 @@ class PhotometryData:
         for name in self._data:
             self._data[name] = np.array(self._data[name])
 
-        total_objects = sum(self._image_counts.values())
-        self.add_mask("default", np.ones(total_objects, dtype=bool))
-        self.use_mask("default")
+        # Check if any data was successfully processed
+        if not self._data:
+            logging.warning("No data was successfully processed - all images were skipped")
+            return
+
+        # Calculate total objects after converting to arrays
+        self._total_objects = len(next(iter(self._data.values())))
+        # total_objects = sum(self._image_counts.values())
+        # Create default mask of appropriate length
+        self.add_mask('default', np.ones(self._total_objects, dtype=bool))
+        self.use_mask('default')
 
     def add_mask(self, name, mask):
         """Add a new mask, ensuring it matches the data length."""
@@ -113,38 +117,26 @@ class PhotometryData:
         Returns:
         None. Updates the object in-place.
         """
-        if photometric_system not in ["Johnson", "AB"]:
-            raise ValueError("photometric_system must be either 'Johnson' or 'AB'")
-
-        if photometric_system == "Johnson":
-            filters = ["Johnson_B", "Johnson_V", "Johnson_R", "Johnson_I", "J"]
-        else:  # AB system
-            filters = ["Sloan_g", "Sloan_r", "Sloan_i", "Sloan_z", "J"]
-
-        # Ensure all required filters are present
-        for f in filters:
-            if f not in self._filter_columns:
-                raise ValueError(f"Required filter {f} not found in data")
 
         # Compute colors
-        mags = [self._data[f] for f in filters]
-        self._data["color1"] = mags[0] - mags[1]
-        self._data["color2"] = mags[1] - mags[2]
-        self._data["color3"] = mags[2] - mags[3]
-        self._data["color4"] = mags[3] - mags[4]
+        print(options.filter_schemas[phschema])
+        schema = options.filter_schemas[phschema]
+        mags = [self._data[f] for f in options.filter_schemas[phschema] ]
+        self._data['color1'] = mags[0%len(schema)] - mags[1%len(schema)]
+        self._data['color2'] = mags[1%len(schema)] - mags[2%len(schema)]
+        self._data['color3'] = mags[2%len(schema)] - mags[3%len(schema)]
+        self._data['color4'] = mags[3%len(schema)] - mags[4%len(schema)]
 
-        # color_mask = self._data['color3'] > 5
+        #color_mask = self._data['color3'] > 5
         # Apply color limits
-        # if options.redlim is not None:
+        #if options.redlim is not None:
         #    color_mask &= (self._data['color1'] + self._data['color2'])/2 <= options.redlim
-        # if options.bluelim is not None:
+        #if options.bluelim is not None:
         #    color_mask &=  (self._data['color1'] + self._data['color2'])/2 >= options.bluelim
         if options.redlim is not None and options.bluelim is not None:
-            color_mask = (
-                ((self._data["color1"] + self._data["color2"]) / 2 <= options.redlim)
-                & ((self._data["color1"] + self._data["color2"]) / 2 >= options.bluelim)
-                & (self._data["color3"] > 5)
-            )
+            color_mask = ((self._data['color1'] + self._data['color2'])/2 <= options.redlim) & \
+                         ((self._data['color1'] + self._data['color2'])/2 >= options.bluelim) & \
+                         (self._data['color3'] > 5)
             self.apply_mask(color_mask)
 
     def get_arrays(self, *names):
@@ -155,14 +147,14 @@ class PhotometryData:
         current_mask = self._masks[self._current_mask]
 
         for name in names:
-            if name == "x":
+            if name == 'x':
                 if not self._current_filter:
-                    raise ValueError(
-                        "No filter is currently set. Use set_current_filter() first."
-                    )
-                arrays.append(
-                    self._data[self._current_filter][self._masks[self._current_mask]]
-                )
+                    raise ValueError("No filter is currently set. Use set_current_filter() first.")
+                # Ensure the filter data matches the mask length
+                if len(self._data[self._current_filter]) != len(current_mask):
+                    raise ValueError(f"Filter data length ({len(self._data[self._current_filter])}) "
+                                   f"does not match mask length ({len(current_mask)})")
+                arrays.append(self._data[self._current_filter][current_mask])
             elif name in self._data:
                 # Ensure data array matches mask length
                 if len(self._data[name]) != len(current_mask):
@@ -170,9 +162,8 @@ class PhotometryData:
                                    f"does not match mask length ({len(current_mask)})")
                 arrays.append(self._data[name][current_mask])
             else:
-                raise KeyError(
-                    f"Column '{name}' not found in data. Available columns: {', '.join(self._data.keys())}"
-                )
+                raise KeyError(f"Column '{name}' not found in data. Available columns: {', '.join(self._data.keys())}")
+
         return tuple(arrays)
 
     def get_fitdata(self, *names):
@@ -226,9 +217,7 @@ class PhotometryData:
         return self._current_filter
 
     def check_required_columns(self):
-        missing_columns = [
-            col for col in self._required_columns if col not in self._data
-        ]
+        missing_columns = [col for col in self._required_columns if col not in self._data]
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
 
@@ -240,8 +229,7 @@ class PhotometryData:
     def __repr__(self):
         return f"PhotometryData with columns: {list(self._data.keys())}, current filter: {self._current_filter}, current mask: {self._current_mask}"
 
-
-def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data):
+def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data, maglim=None):
     """
     Efficiently create pairs of data to be fitted.
 
@@ -255,19 +243,8 @@ def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data):
     """
     try:
         valid_matches = np.array([len(inds) > 0 for inds in nearest_ind])
-        det_data = np.array(
-            [
-                det["X_IMAGE"],
-                det["Y_IMAGE"],
-                det["MAG_AUTO"],
-                det["MAGERR_AUTO"],
-                det["ERRX2_IMAGE"],
-                det["ERRY2_IMAGE"],
-            ]
-        ).T[valid_matches]
-        cat_inds = np.array([inds[0] if len(inds) > 0 else -1 for inds in nearest_ind])[
-            valid_matches
-        ]
+        det_data = np.array([det['X_IMAGE'], det['Y_IMAGE'], det['MAG_AUTO'], det['MAGERR_AUTO'], det['ERRX2_IMAGE'], det['ERRY2_IMAGE']]).T[valid_matches]
+        cat_inds = np.array([inds[0] if len(inds) > 0 else -1 for inds in nearest_ind])[valid_matches]
         cat_data = cat[cat_inds]
 
         # RA+Dec of detections from their measured X&Y
@@ -275,30 +252,28 @@ def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data):
         # X,Y for catalog for their catalog RA&Dec
         cat_x, cat_y = imgwcs.all_world2pix(cat_data['radeg'], cat_data['decdeg'], 1)
 
-        loc = EarthLocation(
-            lat=det.meta["LATITUDE"] * u.deg,
-            lon=det.meta["LONGITUD"] * u.deg,
-            height=det.meta["ALTITUDE"] * u.m,
-        )
-        time = Time(det.meta["JD"], format="jd")
-        coords = SkyCoord(ra * u.deg, dec * u.deg)
+        loc = EarthLocation(lat=det.meta['LATITUDE']*u.deg,
+                            lon=det.meta['LONGITUD']*u.deg,
+                            height=det.meta['ALTITUDE']*u.m)
+        time = Time(det.meta['JD'], format='jd')
+        coords = SkyCoord(ra*u.deg, dec*u.deg)
         altaz = coords.transform_to(AltAz(obstime=time, location=loc))
+        # FIXME: this is not a correct formula!
         airmass = altaz.secz.value
 
-        coord_x = (det_data[:, 0] - det.meta["CTRX"]) / 1024
-        coord_y = (det_data[:, 1] - det.meta["CTRY"]) / 1024
+        coord_x = (det_data[:, 0] - det.meta['CTRX']) / 1024
+        coord_y = (det_data[:, 1] - det.meta['CTRY']) / 1024
 
         filter_mags = {}
-        for filter_name in cat.columns:
-            if filter_name.startswith(("Sloan_", "Johnson_", "J")):
+        for filter_name in cat.filters:
+            if filter_name in options.filter_schemas[det.meta['PHSCHEMA']]:
                 filter_mags[filter_name] = cat_data[filter_name]
 
-        magcat = cat_data[det.meta["REFILTER"]]
-        mag_mask = (
-            (magcat >= options.brightlim) & (magcat <= options.maglim)
-            if options.brightlim
-            else (magcat <= options.maglim)
-        )
+        magcat = cat_data[det.meta['PHFILTER']]
+        maglim = options.maglim or det.meta['MAGLIM']
+        mag_mask = magcat <= maglim
+        if options.brightlim:
+            mag_mask &= magcat >= options.brightlim
 
         n_matched_stars = np.sum(mag_mask)
 
@@ -310,35 +285,35 @@ def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data):
                     filter_mags[filter_name] = cat_data[filter_name][mag_mask]
 
         temp_dy = det_data[:, 3][mag_mask]
-        temp_dy_no_zero = np.sqrt(np.power(temp_dy, 2) + 0.0004)
+        temp_dy_no_zero = np.sqrt(np.power(temp_dy,2)+0.0004)
 
         _dx = det_data[:, 4][mag_mask]
         _dy = det_data[:, 5][mag_mask]
-        _image_dxy = np.sqrt(np.power(_dx, 2) + np.power(_dy, 2) + 0.0025)
+        _image_dxy = np.sqrt(np.power(_dx,2) + np.power(_dy,2) + 0.0025)
 
         data.extend(
             y=det_data[:, 2][mag_mask],
-            adif=airmass[mag_mask] - det.meta["AIRMASS"],
+            adif=airmass[mag_mask] - det.meta['AIRMASS'],
             coord_x=coord_x[mag_mask],
             coord_y=coord_y[mag_mask],
-            img=np.full(n_matched_stars, det.meta["IMGNO"]),
+            img=np.full(n_matched_stars, det.meta['IMGNO']),
             dy=temp_dy_no_zero,
             image_x=det_data[:, 0][mag_mask],
             image_y=det_data[:, 1][mag_mask],
             image_dxy=_image_dxy,
-            ra=cat_data["radeg"][mag_mask],
-            dec=cat_data["decdeg"][mag_mask],
+            ra=cat_data['radeg'][mag_mask],
+            dec=cat_data['decdeg'][mag_mask],
+            cat_x=cat_x[mag_mask],  # transformed catalog X positions
+            cat_y=cat_y[mag_mask],  # transformed catalog Y positions
         )
 
         for filter_name, mag_values in filter_mags.items():
             data.add_filter_column(filter_name, mag_values)
 
-        if det.meta["REFILTER"] in filter_mags:
-            data.set_current_filter(det.meta["REFILTER"])
+        if det.meta['PHFILTER'] in filter_mags:
+            data.set_current_filter(det.meta['PHFILTER'])
         else:
-            raise ValueError(
-                f"Filter '{det.meta['REFILTER']}' not found in catalog data"
-            )
+            raise ValueError(f"Filter '{det.meta['PHFILTER']}' not found in catalog data")
 
         return n_matched_stars
 
@@ -350,7 +325,6 @@ def make_pairs_to_fit(det, cat, nearest_ind, imgwcs, options, data):
         logging.error(f"Unexpected error in make_pairs_to_fit: {e}")
 
     return 0
-
 
 def compute_initial_zeropoints(data, metadata):
     """
@@ -364,21 +338,172 @@ def compute_initial_zeropoints(data, metadata):
     list: Initial zeropoints for each image.
     """
     zeropoints = []
-    x, y, img = data.get_arrays("x", "y", "img")
+    x, y, img = data.get_arrays('x', 'y', 'img')
 
     for img_meta in metadata:
-        img_mask = img == img_meta["IMGNO"]
+        img_mask = img == img_meta['IMGNO']
         img_x = x[img_mask]
         img_y = y[img_mask]
 
         if len(img_x) > 0:
             zeropoint = np.median(img_x - img_y)  # x (catalog mag) - y (observed mag)
         else:
-            logging.warning(
-                f"No data for image {img_meta['IMGNO']}, using default zeropoint of 0"
-            )
+            logging.warning(f"No data for image {img_meta['IMGNO']}, using default zeropoint of 0")
             zeropoint = 0
 
         zeropoints.append(zeropoint)
 
     return zeropoints
+
+
+def compute_zeropoints_all_filters(data, metadata, options):
+    """
+    Compute zeropoints for all available filters with quality metrics.
+    Unified function that handles both zeropoint computation and filter discovery/validation.
+
+    Args:
+    data (PhotometryData): Object containing all photometry data.
+    metadata (list): List of metadata for each image.
+    options: Command line options (for filter_check mode)
+
+    Returns:
+    tuple: (zeropoints_for_final_filter, final_filter_name, filter_results_dict)
+        - zeropoints_for_final_filter: list of zeropoints for the chosen filter
+        - final_filter_name: name of the filter that should be used
+        - filter_results_dict: detailed results for all tested filters
+    """
+    import logging
+
+    # Get all available catalog filters for comprehensive testing
+    catalog_name = 'makak' if getattr(options, 'makak', False) else (getattr(options, 'catalog', None) or 'atlas@localhost')
+    try:
+        from filter_matching import get_catalog_filters
+        all_catalog_filters = list(get_catalog_filters(catalog_name).keys())
+    except:
+        # Fallback to loaded filters if catalog lookup fails
+        all_catalog_filters = data.get_filter_columns()
+
+    loaded_filters = data.get_filter_columns()
+    filter_check_mode = getattr(options, 'filter_check', 'none')
+    original_filter = data._current_filter
+    results = {}
+
+    # Determine which filters to test
+    if filter_check_mode in ['n', 'none']:
+        # Only test current filter for efficiency
+        filters_to_test = [original_filter] if original_filter else loaded_filters[:1]
+    else:
+        # Test all catalog filters for discovery/validation, but only those we can actually use
+        filters_to_test = [f for f in all_catalog_filters if f in loaded_filters]
+
+        # If we don't have all filters loaded, warn the user
+        missing_filters = set(all_catalog_filters) - set(loaded_filters)
+        if missing_filters:
+            print(f"Note: {len(missing_filters)} catalog filters not loaded during schema processing: {sorted(missing_filters)}")
+            print(f"Testing {len(filters_to_test)} available filters: {sorted(filters_to_test)}")
+
+    # Computing zeropoints for multiple filters
+
+    for filter_name in filters_to_test:
+        data.set_current_filter(filter_name)
+        x, y, img = data.get_arrays('x', 'y', 'img')
+
+        zeropoints = []
+        correlations = []
+        n_stars_per_image = []
+
+        for img_meta in metadata:
+            img_mask = img == img_meta['IMGNO']
+            img_x = x[img_mask]
+            img_y = y[img_mask]
+
+            n_stars = len(img_x)
+            n_stars_per_image.append(n_stars)
+
+            if n_stars > 0:
+                zeropoint = np.median(img_x - img_y)  # x (catalog mag) - y (observed mag)
+
+                # Compute correlation if we have enough stars
+                if n_stars >= 5:
+                    # Remove outliers for better correlation
+                    residuals = img_x - img_y
+                    median_res = np.median(residuals)
+                    mad = np.median(np.abs(residuals - median_res))
+                    good_mask = np.abs(residuals - median_res) < 3 * mad
+
+                    if np.sum(good_mask) >= 5:
+                        correlation = np.corrcoef(img_x[good_mask], img_y[good_mask])[0, 1]
+                        if np.isnan(correlation):
+                            correlation = 0
+                    else:
+                        correlation = 0
+                else:
+                    correlation = 0
+            else:
+                logging.warning(f"No stars for image {img_meta['IMGNO']}, filter {filter_name}")
+                zeropoint = 0
+                correlation = 0
+
+            zeropoints.append(zeropoint)
+            correlations.append(correlation)
+
+        # Compute overall quality metrics
+        valid_correlations = [c for c in correlations if c > 0]
+        mean_correlation = np.mean(valid_correlations) if valid_correlations else 0
+        total_stars = sum(n_stars_per_image)
+
+        results[filter_name] = {
+            'zeropoints': zeropoints,
+            'correlations': correlations,
+            'mean_correlation': mean_correlation,
+            'total_stars': total_stars,
+            'n_images': len([c for c in correlations if c > 0])
+        }
+
+        print(f"Filter {filter_name}: correlation={mean_correlation:.3f}, stars={total_stars}, images={results[filter_name]['n_images']}")
+
+    # Determine final filter based on mode
+    header_filter = original_filter
+
+    if filter_check_mode in ['n', 'none']:
+        final_filter = header_filter
+        logging.info(f"Using header filter {final_filter} (no validation)")
+
+    elif filter_check_mode in ['d', 'discover']:
+        # Pick filter with best correlation
+        best_filter = max(results.keys(), key=lambda f: results[f]['mean_correlation'])
+        final_filter = best_filter
+
+        if best_filter != header_filter:
+            logging.info(f"Filter discovery: using {best_filter} (correlation={results[best_filter]['mean_correlation']:.3f}) instead of header {header_filter}")
+            print(f"Filter discovery: using {best_filter} (header was {header_filter})")
+        else:
+            logging.info(f"Filter discovery confirmed header filter: {header_filter}")
+
+    else:
+        # Validation modes (warn/strict)
+        best_filter = max(results.keys(), key=lambda f: results[f]['mean_correlation'])
+
+        if best_filter == header_filter:
+            logging.info(f"Filter validation passed: {header_filter}")
+            final_filter = header_filter
+        else:
+            message = f"Filter mismatch: header={header_filter} (corr={results[header_filter]['mean_correlation']:.3f}), best={best_filter} (corr={results[best_filter]['mean_correlation']:.3f})"
+
+            if filter_check_mode in ['w', 'warn']:
+                logging.warning(message)
+                print(f"WARNING: {message}")
+                final_filter = header_filter  # Continue with header
+            elif filter_check_mode in ['s', 'strict']:
+                logging.error(message)
+                print(f"ERROR: {message}")
+                print("Use --filter-check=none to override or fix the filter in FITS header")
+                import sys
+                sys.exit(1)
+
+    # Restore final filter and return its zeropoints
+    data.set_current_filter(final_filter)
+    final_zeropoints = results[final_filter]['zeropoints']
+
+    return final_zeropoints, final_filter, results
+

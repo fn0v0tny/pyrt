@@ -21,6 +21,7 @@ import astropy.io.fits
 import astropy.table
 import astropy.wcs
 import numpy as np
+import fotfit
 import scipy.optimize as fit
 from astropy.coordinates import SkyCoord
 from sklearn.neighbors import BallTree, KDTree
@@ -122,43 +123,104 @@ def readOptions(args=sys.argv[1:]):
 
 
 def simple_color_model(line, data):
-    """Add transformed magnitudes based on color model"""
-    mag, color1, color2, color3, color4 = data
-    model = 0
-    for chunk in line.split(","):
-        term, strvalue = chunk.split("=")
-        value = np.float64(strvalue)
-        if term[0] == "P":
-            pterm = value
-            n = 1
-            for a in term[1:]:
-                if isnumber(a):
-                    n = int(a)
-                if a == "C":
-                    pterm *= np.power(color1, n)
-                    n = 1
-                if a == "D":
-                    pterm *= np.power(color2, n)
-                    n = 1
-                if a == "E":
-                    pterm *= np.power(color3, n)
-                    n = 1
-                if a == "F":
-                    pterm *= np.power(color4, n)
-                    n = 1
-                if a == "X" or a == "Y" or a == "R":
-                    pterm = 0
-            model += pterm
-        if term == "XC":
-            if value < 0:
-                bval = value * color1
-            if value > 0 and value <= 1:
-                bval = value * color2
-            if value > 1:
-                bval = (value - 1) * color3 + color2
-            model += bval
-    return mag + model
+    """
+    Apply differential corrections from RESPONSE string using fotfit internals.
 
+    MAG_CALIB in ECSV files already includes zeropoint, spatial, airmass,
+    radial, and nonlinearity corrections (computed with colors=0,0,0,0).
+    This function applies differential corrections excluding zeropoint to make
+    catalog magnitudes comparable to MAG_CALIB.
+
+    Args:
+        line: RESPONSE string (e.g., "Z=25.0,PX=0.1,XC=0.3,SC=0.2")
+        data: tuple (mag, color1, color2, color3, color4)
+
+    Returns:
+        Catalog magnitude with differential corrections applied
+    """
+    mag, color1, color2, color3, color4 = data
+
+    # Parse RESPONSE string into terms and values
+    terms = {}
+    try:
+        for chunk in line.split(","):
+            if '=' not in chunk:
+                continue
+            term, strvalue = chunk.split("=")
+            if term in ['FILTER', 'SCHEMA']:
+                continue
+            try:
+                value = float(strvalue)
+                terms[term] = value
+            except ValueError:
+                continue
+    except (ValueError, AttributeError):
+        return mag
+
+    if not terms:
+        return mag
+
+    # Remove Z term since we only want differential corrections
+    # MAG_CALIB already includes the zeropoint
+    terms_no_z = {k: v for k, v in terms.items() if k != 'Z'}
+    if not terms_no_z:
+        return mag  # Only Z term present, no differential corrections needed
+
+    # Use fotfit internals for complete differential correction
+    try:
+        ffit = fotfit.fotfit()
+        ffit.fixall()
+
+        term_names = list(terms_no_z.keys())
+        term_values = list(terms_no_z.values())
+
+        ffit.fixterm(term_names, values=term_values)
+
+        # Calculate model at actual conditions
+        actual_data = np.array([
+            [0.0],      # mc (doesn't matter for differential)
+            [1.0],      # airmass (neutral)
+            [0.0],      # coord_x (image center)
+            [0.0],      # coord_y (image center)
+            [color1],   # actual colors
+            [color2],
+            [color3],
+            [color4],
+            [0],        # img
+            [0.0],      # y (unused)
+            [1.0],      # err (unused)
+            [0.5],      # cat_x (center)
+            [0.5]       # cat_y (center)
+        ])
+
+        # Calculate model at reference conditions (neutral)
+        reference_data = np.array([
+            [0.0],      # mc (doesn't matter for differential)
+            [1.0],      # airmass (neutral)
+            [0.0],      # reference position (center)
+            [0.0],
+            [0.0],      # neutral colors (same as MAG_CALIB creation)
+            [0.0],
+            [0.0],
+            [0.0],
+            [0],        # img
+            [0.0],      # y (unused)
+            [1.0],      # err (unused)
+            [0.5],      # cat_x (center)
+            [0.5]       # cat_y (center)
+        ])
+
+        actual_model = ffit.model(ffit.fixvalues, actual_data)[0]
+        reference_model = ffit.model(ffit.fixvalues, reference_data)[0]
+
+        # Differential correction = model(actual) - model(reference)
+        differential = actual_model - reference_model
+
+        return mag + differential
+
+    except Exception:
+        # Fallback to original magnitude if fotfit fails
+        return mag
 
 def open_ecsv_file(arg, verbose=True):
     """Opens a file if possible, given .ecsv or .fits"""

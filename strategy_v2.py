@@ -206,9 +206,7 @@ def load_observing_conditions(ecsv_file='image.ecsv'):
         # Ensure sky_1s is positive
         sky_1s = max(sky_1s, 1.0)
         
-        # Correct the zeropoint - the +10 correction might be wrong
-        # Let's use the raw value and see if it makes more sense
-        magzero = magzero_raw  # Try using the raw zeropoint first
+        magzero = magzero_raw +10  # Try using the raw zeropoint first
         
         # Convert magzero to 1-second zeropoint
         magzero_1s = magzero - 2.5*np.log10(exposure)
